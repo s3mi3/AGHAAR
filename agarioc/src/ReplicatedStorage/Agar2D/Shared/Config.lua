@@ -80,6 +80,9 @@ Config.Cell = {
 	SplitImpulse = 850, -- was 600; splits actually spread now
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
+	SplitInheritedBoostScale = 0.85,
+	SplitMaxBoost = 1650,
+	SplitBoostDragPerSecond = 1.9,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
@@ -97,13 +100,14 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: split every eligible cell into a fixed piece count.
-	-- Space creates one child per cell, Q makes 2 total pieces per cell,
-	-- and E makes 3 total pieces per cell.
+	-- MULTI-SPLIT: chain classic splits in one command. Q performs two
+	-- generations (up to 4 pieces), E performs three (up to 8 pieces).
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
+	DoubleSplitDepth = 2,
+	TripleSplitDepth = 3,
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
@@ -122,8 +126,8 @@ Config.Cell = {
 	-- All cells use the same camera-center aim vector so a split travels in
 	-- parallel lanes instead of converging side-to-side on the cursor.
 	-- These small fans preserve a little organic lateral movement.
-	SplitGroupFanRadians = 0.028,
-	MultiSplitFanRadians = 0.035,
+	SplitGroupFanRadians = 0.008,
+	MultiSplitFanRadians = 0.014,
 	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
@@ -505,7 +509,7 @@ Config.Render = {
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 24,
 	SplitSpawnAnimationTargetSharpness = 20,
-	SplitSpawnAnimationTargetLeadSeconds = 0.08,
+	SplitSpawnAnimationTargetLeadSeconds = 0.14,
 	SplitSpawnAnimationMaxOverrunSeconds = 0.12,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,

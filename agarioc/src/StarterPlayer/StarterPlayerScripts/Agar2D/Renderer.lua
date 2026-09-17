@@ -77,6 +77,13 @@ local function speedForMass(mass: number?): number
 	return math.clamp(speed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
 end
 
+local function splitImpulseForMass(mass: number?): number
+	local scale = (Config.Player.InitialMass / math.max(mass or Config.Player.InitialMass, 1))
+		^ (Config.Cell.SplitImpulseMassExponent or 0.28)
+	scale = math.clamp(scale, Config.Cell.MinSplitImpulseScale or 0.34, 1)
+	return math.min(Config.Cell.SplitImpulse * scale, Config.Cell.SplitMaxBoost or math.huge)
+end
+
 local function canMassFireEjected(mass: number?): boolean
 	if not mass then
 		return false
@@ -1120,12 +1127,18 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local displayPos = pos
 		local displayRadius = radius
 		local spawnSource = nil
+		local splitVisualBoost = nil
 		if kind == "cell" then
 			local origin
 			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra)
 			if origin then
 				displayPos = origin
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
+				local launchDelta = pos - origin
+				local launchDir = if launchDelta.Magnitude > 0.001 then launchDelta.Unit else self.localMoveAim
+				if not self.localFrozen then
+					splitVisualBoost = launchDir * splitImpulseForMass(mass)
+				end
 			end
 		end
 		state = {
@@ -1146,6 +1159,7 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			spawnAnimationOffset = if displayPos ~= pos then displayPos - pos else nil,
 			spawnAnimationTargetPos = if displayPos ~= pos then pos else nil,
 			spawnAnimationStartRadius = if displayPos ~= pos then displayRadius else nil,
+			splitVisualBoost = splitVisualBoost,
 		}
 		states[id] = state
 	else
@@ -1177,6 +1191,16 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		else
 			local elapsed = math.max(receivedAt - (state.receivedAt or receivedAt), 1 / Config.Simulation.NetworkHz)
 			state.velocity = (pos - state.targetPos) / elapsed
+			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
+				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
+				local baseVelocity = moveDir * speedForMass(mass) * moveScale
+				local observedBoost = state.velocity - baseVelocity
+				local maxBoost = math.max(Config.Cell.SplitMaxBoost or 1650, 1)
+				if observedBoost.Magnitude > maxBoost then
+					observedBoost = observedBoost.Unit * maxBoost
+				end
+				state.splitVisualBoost = state.splitVisualBoost:Lerp(observedBoost, 0.55)
+			end
 		end
 	end
 
@@ -1627,6 +1651,9 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	local startedAt = state.spawnAnimationStartedAt or (untilTime - (Config.Render.SplitSpawnAnimationSeconds or 0.52))
 	local duration = math.max(Config.Render.SplitSpawnAnimationSeconds or (untilTime - startedAt), 0.001)
 	local elapsed = math.max(now - startedAt, 0)
+	if state.splitVisualBoost and not self.localFrozen then
+		state.splitVisualBoost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
+	end
 
 	local targetLead = math.clamp(
 		now - (state.receivedAt or now),
@@ -1691,8 +1718,17 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 		-- We also skip normal reconcile below so displayPos truly holds.
 		speedScale = 0
 	end
-	if speedScale > 0 then
-		local delta = dir * speedForMass(state.mass) * speedScale * dt
+	local predictedVelocity = dir * speedForMass(state.mass) * speedScale
+	if state.splitVisualBoost and not self.localFrozen then
+		state.splitVisualBoost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
+		if state.splitVisualBoost.Magnitude < 1 then
+			state.splitVisualBoost = nil
+		else
+			predictedVelocity += state.splitVisualBoost
+		end
+	end
+	if predictedVelocity.Magnitude > 0.001 then
+		local delta = predictedVelocity * dt
 		state.displayPos = self:_moveOwnCellWithBarrierCollision(state.displayPos, delta, state.radius)
 	end
 

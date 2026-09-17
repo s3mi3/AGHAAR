@@ -2152,6 +2152,14 @@ function GameService:_splitImpulseForMass(mass: number, multiplier: number?): nu
 	return Config.Cell.SplitImpulse * self:_splitImpulseScale(mass) * (multiplier or 1)
 end
 
+function GameService:_splitLaunchBoost(cell, direction: Vector2, childMass: number, multiplier: number?): Vector2
+	local freshSpeed = self:_splitImpulseForMass(childMass, multiplier)
+	local inheritedForwardSpeed = math.max((cell.boost or Vector2.zero):Dot(direction), 0)
+		* math.clamp(Config.Cell.SplitInheritedBoostScale or 0.85, 0, 1)
+	local maxBoost = math.max(Config.Cell.SplitMaxBoost or freshSpeed, freshSpeed)
+	return direction * math.min(freshSpeed + inheritedForwardSpeed, maxBoost)
+end
+
 function GameService:_spawnFoodPellet(pos: Vector2, pelletMass: number, angle: number?, sourceRadius: number?)
 	local id = self:_nextId()
 	local dir = Vec2.fromAngle(angle or self.rng:NextNumber(0, math.pi * 2))
@@ -2745,7 +2753,7 @@ function GameService:_processCommands()
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_splitEveryCellIntoN(state, 2)
+			self:_chainSplitPlayer(state, Config.Cell.DoubleSplitDepth or 2)
 		end
 
 		-- Triple-split (E): every eligible cell splits into 3 pieces.
@@ -2754,7 +2762,7 @@ function GameService:_processCommands()
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_splitEveryCellIntoN(state, 3)
+			self:_chainSplitPlayer(state, Config.Cell.TripleSplitDepth or 3)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner => cells skip
@@ -2778,6 +2786,16 @@ function GameService:_processCommands()
 					break
 				end
 			end
+		end
+	end
+end
+
+function GameService:_chainSplitPlayer(state, depth: number)
+	for _ = 1, math.max(math.floor(depth), 1) do
+		local beforeCount = #state.cells
+		self:_splitPlayer(state)
+		if #state.cells == beforeCount or #state.cells >= Config.Player.MaxCells then
+			break
 		end
 	end
 end
@@ -2823,7 +2841,7 @@ function GameService:_splitPlayer(state)
 		-- Non-frozen: normal outward launch.
 		local childVelocity = if state.frozen
 			then Vector2.zero
-			else dir * self:_splitImpulseForMass(cell.mass)
+			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
 			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
@@ -2906,7 +2924,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 				spawnPos = cell.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
 				spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
 			else
-				childVelocity = dir * self:_splitImpulseForMass(pieceMass)
+				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
 					cell.pos,
 					cell.pos + dir * (
@@ -2981,7 +2999,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 			spawnPos = biggest.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
 			spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
 		else
-			childVelocity = dir * self:_splitImpulseForMass(pieceMass)
+			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				biggest.pos,
 				biggest.pos + dir * (
@@ -3337,7 +3355,7 @@ function GameService:_moveCells(dt: number)
 			end
 		end
 
-		cell.boost *= math.max(0, 1 - dt * 1.9)
+		cell.boost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
 		cell.sweptEatStartPos = moveStart
 		cell.sweptEatBoostSpeed = cell.boost.Magnitude
 		cell.pos += (dir * speed * speedScale + pull + cell.boost) * dt
