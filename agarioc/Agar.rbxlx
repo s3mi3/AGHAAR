@@ -3198,7 +3198,7 @@ local function splitImpulseForMass(mass: number?): number
 	return math.min(Config.Cell.SplitImpulse * scale, Config.Cell.SplitMaxBoost or math.huge)
 end
 
-local function canMassFireEjected(mass: number?): boolean
+local function canMassFireEjected(mass: number?, frozen: boolean?): boolean
 	if not mass then
 		return false
 	end
@@ -3208,7 +3208,9 @@ local function canMassFireEjected(mass: number?): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = if frozen
+		then math.max(Config.Ejected.FrozenCost or Config.Ejected.Cost or 0, 0)
+		else math.max(Config.Ejected.Cost or 0, 0)
 	return cost &lt;= 0 or mass &gt; cost
 end
 
@@ -3796,15 +3798,6 @@ function Renderer:setLocalFrozen(frozen: boolean)
 	-- instant the freeze releases.
 	if wasFrozen and not self.localFrozen then
 		self.unfreezeGraceStartedAt = os.clock()
-		-- The server clears stored split momentum on release. Mirror that
-		-- immediately instead of replaying a stale predicted boost until
-		-- the next authoritative snapshot arrives.
-		for _, state in self.cellStates do
-			if state.isOwn then
-				state.splitVisualBoost = nil
-				state.velocity = Vector2.zero
-			end
-		end
 	end
 end
 
@@ -3814,7 +3807,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	for id, state in self.cellStates do
 		if state.isOwn
 			and state.confirmed
-			and canMassFireEjected(state.mass)
+			and canMassFireEjected(state.mass, self.localFrozen)
 		then
 			eligible[#eligible + 1] = {
 				id = id,
@@ -3829,10 +3822,24 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id &lt; b.id
 	end)
 
-	-- Match the server's receiver selection: the cell nearest the cursor
-	-- receives pellets and does not also emit a visual-only pellet.
+	-- Self-feed only when the cursor is near the group center or actually
+	-- inside one of the player's cells. Otherwise every cell fires outward.
 	local targetCell = nil
-	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" and #eligible &gt; 1 then
+	local cursorMaySelfFeed = false
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" then
+		local center = self.predictedOwnCenter
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = center ~= nil and (target - center).Magnitude &lt;= centerRadius
+		if not cursorMaySelfFeed then
+			for _, entry in eligible do
+				if (target - entry.state.displayPos).Magnitude &lt;= entry.state.radius then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed and #eligible &gt; 1 then
 		local targetIndex = nil
 		local bestDistanceSquared = math.huge
 		for index, entry in eligible do
@@ -4329,8 +4336,11 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
 				local launchDelta = pos - origin
 				local launchDir = if launchDelta.Magnitude &gt; 0.001 then launchDelta.Unit else self.localMoveAim
-				if not self.localFrozen then
-					splitVisualBoost = launchDir * splitImpulseForMass(mass)
+				local boostScale = if self.localFrozen
+					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+					else 1
+				if boostScale &gt; 0 then
+					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
 				end
 			end
 		end
@@ -6823,11 +6833,11 @@ Config.Cell = {
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 850, -- was 600; splits actually spread now
+	SplitImpulse = 760,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SplitInheritedBoostScale = 0.85,
-	SplitMaxBoost = 1650,
+	SplitMaxBoost = 1450,
 	SplitBoostDragPerSecond = 1.9,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
@@ -6835,7 +6845,8 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0.35,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.32,
+	FrozenSplitNudgeRadiusScale = 0.55,
+	FrozenSplitHeldBoostScale = 0.4,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -7064,6 +7075,7 @@ Config.Ejected = {
 	Radius = 4,
 	NozzleOffset = 2,
 	Cost = 0,
+	FrozenCost = 10,
 	MinFireMass = 0,
 	EatMinCellMass = 1,
 	TouchPickupPadding = 0,
@@ -7076,7 +7088,7 @@ Config.Ejected = {
 	SelfRecoveryEndScore = 2400000,
 	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 460, -- was 520; slightly slower so pellets don't overshoot cluster
+	Speed = 380,
 	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
 	TargetHomingSharpness = 12,
 	WallBounceScale = 0.22,
@@ -7112,6 +7124,7 @@ Config.Ejected = {
 	-- receiver. Without this, surrounding big cells eat each other's
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
+	SelfFeedCenterRadius = 180,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
@@ -8600,13 +8613,21 @@ local function canCollectEjected(collector, ejected): boolean
 	return Vec2.distanceSquared(collector.pos, closest) &lt;= collectDistance * collectDistance
 end
 
+local function ejectedCostForCell(cell): number
+	local config = Config.Ejected
+	if cell.owner and cell.owner.frozen then
+		return math.max(config.FrozenCost or config.Cost or 0, 0)
+	end
+	return math.max(config.Cost or 0, 0)
+end
+
 local function canCellFireEjected(cell): boolean
 	local minFireMass = math.max(Config.Ejected.MinFireMass or 0, 0)
 	if cell.mass &lt; minFireMass then
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = ejectedCostForCell(cell)
 	return cost &lt;= 0 or cell.mass &gt; cost
 end
 
@@ -11115,12 +11136,11 @@ function GameService:_splitPlayer(state)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 		local childRadius = massToRadius(childMass)
-		-- If frozen, spawn the child with zero velocity but nudge it
-		-- a short distance along aim so the group has a direction
-		-- (not stacked on one point). Cells still stay bunched close.
-		-- Non-frozen: normal outward launch.
+		-- Frozen cells do not move, but retain a reduced paused launch
+		-- that resumes when freeze is released.
 		local childVelocity = if state.frozen
-			then Vector2.zero
+			then self:_splitLaunchBoost(cell, dir, childMass)
+				* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
@@ -11195,7 +11215,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local childVelocity
 			local spawnPos
 			if state.frozen then
-				childVelocity = Vector2.zero
+				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
+					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
@@ -11272,15 +11293,8 @@ function GameService:_toggleFreeze(state)
 			state.unfreezeGraceStart = now
 		end
 
-		-- Frozen splits intentionally have no stored launch. Clear any
-		-- older split boost as well so releasing a large stack cannot
-		-- replay stale momentum or fan the cells in random directions.
-		for _, id in state.cells do
-			local cell = self.cells[id]
-			if cell then
-				cell.boost = Vector2.zero
-			end
-		end
+		-- Split boost is intentionally left untouched while frozen, so
+		-- paused movement resumes in the same direction on release.
 	end
 
 	state.frozen = not state.frozen
@@ -11300,7 +11314,23 @@ function GameService:_ejectMassFromCells(state, cells)
 	-- actually work — otherwise the surrounding big cells eat each
 	-- other's pellets before they can cross to the tiny receiver.
 	local targetCellId = nil
+	local cursorMaySelfFeed = false
 	if Config.Ejected.SkipTargetCell and state.input.target then
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = state.center ~= nil
+			and Vec2.distanceSquared(state.input.target, state.center) &lt;= centerRadius * centerRadius
+		if not cursorMaySelfFeed then
+			for _, cell in cells do
+				if self.cells[cell.id]
+					and Vec2.distanceSquared(state.input.target, cell.pos) &lt;= cell.radius * cell.radius
+				then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed then
 		local bestDistSq = math.huge
 		for _, cell in cells do
 			if self.cells[cell.id] then
@@ -11361,7 +11391,7 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * cos - aim.Y * sin,
 				aim.X * sin + aim.Y * cos
 			), aim)
-			local cost = math.max(Config.Ejected.Cost or 0, 0)
+			local cost = ejectedCostForCell(cell)
 			if cost &gt; 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end

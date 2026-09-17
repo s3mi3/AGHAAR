@@ -328,13 +328,21 @@ local function canCollectEjected(collector, ejected): boolean
 	return Vec2.distanceSquared(collector.pos, closest) <= collectDistance * collectDistance
 end
 
+local function ejectedCostForCell(cell): number
+	local config = Config.Ejected
+	if cell.owner and cell.owner.frozen then
+		return math.max(config.FrozenCost or config.Cost or 0, 0)
+	end
+	return math.max(config.Cost or 0, 0)
+end
+
 local function canCellFireEjected(cell): boolean
 	local minFireMass = math.max(Config.Ejected.MinFireMass or 0, 0)
 	if cell.mass < minFireMass then
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = ejectedCostForCell(cell)
 	return cost <= 0 or cell.mass > cost
 end
 
@@ -2843,12 +2851,11 @@ function GameService:_splitPlayer(state)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 		local childRadius = massToRadius(childMass)
-		-- If frozen, spawn the child with zero velocity but nudge it
-		-- a short distance along aim so the group has a direction
-		-- (not stacked on one point). Cells still stay bunched close.
-		-- Non-frozen: normal outward launch.
+		-- Frozen cells do not move, but retain a reduced paused launch
+		-- that resumes when freeze is released.
 		local childVelocity = if state.frozen
-			then Vector2.zero
+			then self:_splitLaunchBoost(cell, dir, childMass)
+				* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
@@ -2923,7 +2930,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local childVelocity
 			local spawnPos
 			if state.frozen then
-				childVelocity = Vector2.zero
+				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
+					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
@@ -3000,15 +3008,8 @@ function GameService:_toggleFreeze(state)
 			state.unfreezeGraceStart = now
 		end
 
-		-- Frozen splits intentionally have no stored launch. Clear any
-		-- older split boost as well so releasing a large stack cannot
-		-- replay stale momentum or fan the cells in random directions.
-		for _, id in state.cells do
-			local cell = self.cells[id]
-			if cell then
-				cell.boost = Vector2.zero
-			end
-		end
+		-- Split boost is intentionally left untouched while frozen, so
+		-- paused movement resumes in the same direction on release.
 	end
 
 	state.frozen = not state.frozen
@@ -3028,7 +3029,23 @@ function GameService:_ejectMassFromCells(state, cells)
 	-- actually work — otherwise the surrounding big cells eat each
 	-- other's pellets before they can cross to the tiny receiver.
 	local targetCellId = nil
+	local cursorMaySelfFeed = false
 	if Config.Ejected.SkipTargetCell and state.input.target then
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = state.center ~= nil
+			and Vec2.distanceSquared(state.input.target, state.center) <= centerRadius * centerRadius
+		if not cursorMaySelfFeed then
+			for _, cell in cells do
+				if self.cells[cell.id]
+					and Vec2.distanceSquared(state.input.target, cell.pos) <= cell.radius * cell.radius
+				then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed then
 		local bestDistSq = math.huge
 		for _, cell in cells do
 			if self.cells[cell.id] then
@@ -3089,7 +3106,7 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * cos - aim.Y * sin,
 				aim.X * sin + aim.Y * cos
 			), aim)
-			local cost = math.max(Config.Ejected.Cost or 0, 0)
+			local cost = ejectedCostForCell(cell)
 			if cost > 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end

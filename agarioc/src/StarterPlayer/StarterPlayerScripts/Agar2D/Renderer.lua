@@ -84,7 +84,7 @@ local function splitImpulseForMass(mass: number?): number
 	return math.min(Config.Cell.SplitImpulse * scale, Config.Cell.SplitMaxBoost or math.huge)
 end
 
-local function canMassFireEjected(mass: number?): boolean
+local function canMassFireEjected(mass: number?, frozen: boolean?): boolean
 	if not mass then
 		return false
 	end
@@ -94,7 +94,9 @@ local function canMassFireEjected(mass: number?): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = if frozen
+		then math.max(Config.Ejected.FrozenCost or Config.Ejected.Cost or 0, 0)
+		else math.max(Config.Ejected.Cost or 0, 0)
 	return cost <= 0 or mass > cost
 end
 
@@ -682,15 +684,6 @@ function Renderer:setLocalFrozen(frozen: boolean)
 	-- instant the freeze releases.
 	if wasFrozen and not self.localFrozen then
 		self.unfreezeGraceStartedAt = os.clock()
-		-- The server clears stored split momentum on release. Mirror that
-		-- immediately instead of replaying a stale predicted boost until
-		-- the next authoritative snapshot arrives.
-		for _, state in self.cellStates do
-			if state.isOwn then
-				state.splitVisualBoost = nil
-				state.velocity = Vector2.zero
-			end
-		end
 	end
 end
 
@@ -700,7 +693,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	for id, state in self.cellStates do
 		if state.isOwn
 			and state.confirmed
-			and canMassFireEjected(state.mass)
+			and canMassFireEjected(state.mass, self.localFrozen)
 		then
 			eligible[#eligible + 1] = {
 				id = id,
@@ -715,10 +708,24 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id < b.id
 	end)
 
-	-- Match the server's receiver selection: the cell nearest the cursor
-	-- receives pellets and does not also emit a visual-only pellet.
+	-- Self-feed only when the cursor is near the group center or actually
+	-- inside one of the player's cells. Otherwise every cell fires outward.
 	local targetCell = nil
-	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" and #eligible > 1 then
+	local cursorMaySelfFeed = false
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" then
+		local center = self.predictedOwnCenter
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = center ~= nil and (target - center).Magnitude <= centerRadius
+		if not cursorMaySelfFeed then
+			for _, entry in eligible do
+				if (target - entry.state.displayPos).Magnitude <= entry.state.radius then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed and #eligible > 1 then
 		local targetIndex = nil
 		local bestDistanceSquared = math.huge
 		for index, entry in eligible do
@@ -1215,8 +1222,11 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
 				local launchDelta = pos - origin
 				local launchDir = if launchDelta.Magnitude > 0.001 then launchDelta.Unit else self.localMoveAim
-				if not self.localFrozen then
-					splitVisualBoost = launchDir * splitImpulseForMass(mass)
+				local boostScale = if self.localFrozen
+					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+					else 1
+				if boostScale > 0 then
+					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
 				end
 			end
 		end

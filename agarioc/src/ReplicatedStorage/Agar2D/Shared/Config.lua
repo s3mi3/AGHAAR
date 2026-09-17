@@ -77,11 +77,11 @@ Config.Cell = {
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 850, -- was 600; splits actually spread now
+	SplitImpulse = 760,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SplitInheritedBoostScale = 0.85,
-	SplitMaxBoost = 1650,
+	SplitMaxBoost = 1450,
 	SplitBoostDragPerSecond = 1.9,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
@@ -89,7 +89,8 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0.35,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.32,
+	FrozenSplitNudgeRadiusScale = 0.55,
+	FrozenSplitHeldBoostScale = 0.4,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -318,6 +319,7 @@ Config.Ejected = {
 	Radius = 4,
 	NozzleOffset = 2,
 	Cost = 0,
+	FrozenCost = 10,
 	MinFireMass = 0,
 	EatMinCellMass = 1,
 	TouchPickupPadding = 0,
@@ -330,7 +332,7 @@ Config.Ejected = {
 	SelfRecoveryEndScore = 2400000,
 	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 460, -- was 520; slightly slower so pellets don't overshoot cluster
+	Speed = 380,
 	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
 	TargetHomingSharpness = 12,
 	WallBounceScale = 0.22,
@@ -366,6 +368,7 @@ Config.Ejected = {
 	-- receiver. Without this, surrounding big cells eat each other's
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
+	SelfFeedCenterRadius = 180,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
