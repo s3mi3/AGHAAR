@@ -1762,7 +1762,14 @@ function GameService:_spawnBarrier(pos: Vector2?)
 	}
 end
 
-function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: number, sourceCellId: number?, targetCellId: number?)
+function GameService:_spawnEjected(
+	pos: Vector2,
+	dir: Vector2,
+	ownerUserId: number,
+	sourceCellId: number?,
+	targetCellId: number?,
+	pickupMultiplier: number?
+)
 	self:_trimOwnerEjected(ownerUserId)
 	if self.ejectedCount >= Config.Ejected.MaxCount then
 		return
@@ -1787,6 +1794,7 @@ function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: numb
 		pos = self:_clampToWorld(pos, Config.Ejected.Radius),
 		vel = dir * Config.Ejected.Speed,
 		mass = Config.Ejected.Mass,
+		pickupMultiplier = math.max(pickupMultiplier or 1, 1),
 		radius = Config.Ejected.Radius,
 		spawnedAt = os.clock(),
 	}
@@ -1988,7 +1996,9 @@ local function ownCellMayCollectOwnEjected(cell, ejected, now: number): boolean
 end
 
 function GameService:_ejectedMassGain(cell, ejected, gainContext: string?): number
-	local baseGain = ejected.mass * math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+	local baseGain = ejected.mass
+		* math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+		* math.max(ejected.pickupMultiplier or 1, 1)
 	if gainContext ~= "selfFeed" or ejected.ownerUserId ~= cell.ownerUserId then
 		return baseGain
 	end
@@ -3086,7 +3096,14 @@ function GameService:_ejectMassFromCells(state, cells)
 		end
 	end
 
-	local perTickLimit = math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	-- In self-feed mode one homing pellet represents every feeding cell.
+	-- It grants the same combined mass without rendering up to 31 pellets
+	-- per fire interval. Outward feeding still emits once from every cell.
+	local aggregateSelfFeed = targetCellId ~= nil and eligibleCount > 1
+	local pickupMultiplier = if aggregateSelfFeed then eligibleCount else 1
+	local perTickLimit = if aggregateSelfFeed
+		then 1
+		else math.min(eligibleCount, self:_ejectCellsPerTickLimit())
 	local startIndex = (state.ejectCycleOffset % eligibleCount) + 1
 	local firedAny = false
 
@@ -3107,11 +3124,24 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * sin + aim.Y * cos
 			), aim)
 			local cost = ejectedCostForCell(cell)
-			if cost > 0 then
+			if aggregateSelfFeed and cost > 0 then
+				for _, feedingCell in eligible do
+					if self.cells[feedingCell.id] and feedingCell.mass > cost then
+						self:_setCellMass(feedingCell, feedingCell.mass - cost)
+					end
+				end
+			elseif cost > 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
 			local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
-			self:_spawnEjected(cell.pos + aim * spawnDistance, shotDir, state.userId, cell.id, targetCellId)
+			self:_spawnEjected(
+				cell.pos + aim * spawnDistance,
+				shotDir,
+				state.userId,
+				cell.id,
+				targetCellId,
+				pickupMultiplier
+			)
 			firedAny = true
 		end
 	end
