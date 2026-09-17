@@ -61,28 +61,21 @@ StarterPlayer/StarterPlayerScripts/
 | XP / leveling                 | `Progression.MaxLevel = 100`                   |
 | Skin shop                     | `SkinShop` module + `SkinData`                 |
 
-## Not yet implemented — the feature list you asked for
+## Updating the place file
 
-- [ ] **Freeze blobs** — no `Config.Freeze` block, no `FreezeSystem` module.
-  This is the one thing missing from your requested feature set.
-  Design (to be built): pickup entity spawns like coins → grants charge →
-  activate with a key (e.g. `F`) → freezes enemy cells within radius R
-  for T seconds, tinted blue, velocity zeroed.
+After editing one of the gameplay source mirrors, run:
 
-## Recommended next steps
+```sh
+python3 tools/sync_place_sources.py
+```
 
-1. Confirm the place opens in Studio and Play mode works. Report any errors.
-2. Once confirmed, ask for the freeze mechanic to be added — it will touch:
-   - `ReplicatedStorage/Agar2D/Shared/Config` (new `Config.Freeze` block)
-   - `ServerScriptService/Agar2D/GameService` (spawn pickups, apply freeze state, tick down)
-   - `StarterPlayer/StarterPlayerScripts/Agar2D/InputController` (new `F` key binding)
-   - `StarterPlayer/StarterPlayerScripts/Agar2D/Renderer` (draw pickups + frozen tint)
+This copies the edited Config, GameService, Camera2D, and Renderer modules into
+`Agar.rbxlx`, which can then be opened and tested in Roblox Studio.
 
 ## Notes / limits
 
 - All source is authored by [s3mi3](https://github.com/s3mi3). Check the repo for
   license before publishing your derivative game.
-- Editing the extracted `.lua` files in `src/` does **not** update the `.rbxlx`.
-  Edit inside Studio. `src/` is a read-only mirror for browsing.
-- If you want two-way sync between disk and Studio, look into
-  [Rojo](https://rojo.space) — it's the standard tool for that.
+- The included sync script is one-way: source mirror → place file.
+- For full two-way project synchronization, use
+  [Rojo](https://rojo.space).
