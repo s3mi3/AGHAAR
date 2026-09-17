@@ -76,7 +76,7 @@ Config.Cell = {
 	RecombineMaxSeconds = 5, -- cap; even the biggest cells wait at most this long
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
-	SplitMinMass = 1000,
+	SplitMinMass = 100,
 	SplitImpulse = 850, -- was 600; splits actually spread now
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
@@ -201,8 +201,8 @@ Config.Virus = {
 	-- Keep enough hazards in the enlarged world that several are normally
 	-- visible around a player instead of being lost between camera regions.
 	TargetCount = 120,
-	Mass = 500,
-	Radius = 76,
+	Mass = 300,
+	Radius = 14,
 	EatSplitMinMass = 2000,
 	EatOverlap = 0.5,
 	-- Below the 32-cell cap a virus bursts the eater into more pieces.
@@ -313,17 +313,14 @@ Config.Input = {
 Config.Ejected = {
 	-- Feeding always transfers this fixed amount; it is not derived from the
 	-- firing player's largest cell.
-	Mass = 100,
-	PickupMassMultiplier = 1, -- was 2; each pellet now gives 100 mass, not 200
-	Radius = 12,
+	Mass = 10,
+	PickupMassMultiplier = 1,
+	Radius = 4,
 	NozzleOffset = 2,
-	-- Cost was 0, so firing was minting mass out of thin air. Now the
-	-- source cell loses exactly what the pellet carries, so self-feed is
-	-- a true mass transfer (big -> small) instead of "big gets bigger".
-	Cost = 100,
+	Cost = 0,
 	MinFireMass = 0,
-	EatMinCellMass = 18,
-	TouchPickupPadding = -2,
+	EatMinCellMass = 1,
+	TouchPickupPadding = 0,
 	PickupCoverage = 1, -- 1 = the whole pellet must be inside the receiving cell
 	-- Self-feed recovery was scaling gain down based on TOTAL player mass:
 	-- at high mass, feeding a small sibling gave ~5% of the pellet's mass,
