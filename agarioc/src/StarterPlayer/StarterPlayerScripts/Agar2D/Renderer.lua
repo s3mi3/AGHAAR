@@ -650,7 +650,13 @@ end
 function Renderer:_removePredictedEjectedNear(pos: Vector2)
 	local bestId = nil
 	local bestDistance = math.huge
-	local maxDistance = math.max(Config.Ejected.Radius * 6, 54)
+	-- Allow for network transit while matching the authoritative pellet
+	-- to its local prediction. A failed match renders both as two streams.
+	local maxDistance = math.max(
+		Config.Ejected.Radius * 6,
+		Config.Ejected.Speed * 0.4,
+		54
+	)
 	local maxDistanceSquared = maxDistance * maxDistance
 	for id, state in self.ejectedStates do
 		if state.predicted == true then

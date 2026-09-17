@@ -4555,7 +4555,7 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			ejected.id,
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
-			ejected.colorPayload,
+			ejected.ownerUserId,
 			round(ejected.vel.X, Config.Network.PositionPrecision),
 			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}

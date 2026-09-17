@@ -3764,7 +3764,13 @@ end
 function Renderer:_removePredictedEjectedNear(pos: Vector2)
 	local bestId = nil
 	local bestDistance = math.huge
-	local maxDistance = math.max(Config.Ejected.Radius * 6, 54)
+	-- Allow for network transit while matching the authoritative pellet
+	-- to its local prediction. A failed match renders both as two streams.
+	local maxDistance = math.max(
+		Config.Ejected.Radius * 6,
+		Config.Ejected.Speed * 0.4,
+		54
+	)
 	local maxDistanceSquared = maxDistance * maxDistance
 	for id, state in self.ejectedStates do
 		if state.predicted == true then
@@ -6803,8 +6809,8 @@ Config.Player = {
 	InitialMass = 1000,
 	MinDecayMass = 140,
 	DecayPerSecond = 0.0004, -- was 0.001; slower shrink so mass sticks around
-	BaseSpeed = 335,
-	MinSpeed = 82,
+	BaseSpeed = 275,
+	MinSpeed = 75,
 	SpeedExponent = 0.42,
 	SpawnInvulnSeconds = 1.2,
 	MovementDeadZone = 10,
@@ -6833,12 +6839,12 @@ Config.Cell = {
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 760,
+	SplitImpulse = 600,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
-	SplitInheritedBoostScale = 0.85,
-	SplitMaxBoost = 1450,
-	SplitBoostDragPerSecond = 1.9,
+	SplitInheritedBoostScale = 0.65,
+	SplitMaxBoost = 1050,
+	SplitBoostDragPerSecond = 2.4,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
@@ -6966,11 +6972,11 @@ Config.Virus = {
 	-- At the cap, the virus is absorbed and its mass is gained instead.
 	SplitOnEat = true,
 	MaxBurstPieces = 8,
-	BumpVelocityTransfer = 1,
-	BumpMinSpeed = 300,
-	BumpMaxSpeed = 650,
-	BumpNudge = 10,
-	DragPerSecond = 0.8,
+	BumpVelocityTransfer = 0.7,
+	BumpMinSpeed = 140,
+	BumpMaxSpeed = 300,
+	BumpNudge = 5,
+	DragPerSecond = 1.8,
 	WallBounceScale = 0.25,
 	StopSpeed = 10,
 	DynamicSnapshotMinSpeed = 8,
@@ -12840,7 +12846,7 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			ejected.id,
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
-			ejected.colorPayload,
+			ejected.ownerUserId,
 			round(ejected.vel.X, Config.Network.PositionPrecision),
 			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}
