@@ -3097,14 +3097,17 @@ function GameService:_ejectMassFromCells(state, cells)
 		end
 	end
 
-	-- In self-feed mode one homing pellet represents every feeding cell.
-	-- It grants the same combined mass without rendering up to 31 pellets
-	-- per fire interval. Outward feeding still emits once from every cell.
+	-- In self-feed mode a small configurable group of pellets represents
+	-- every feeding cell. Their combined gain is unchanged, but the feed
+	-- looks fuller without rendering up to 31 pellets every interval.
 	local aggregateSelfFeed = targetCellId ~= nil and eligibleCount > 1
-	local pickupMultiplier = if aggregateSelfFeed then eligibleCount else 1
 	local perTickLimit = if aggregateSelfFeed
-		then 1
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
 		else math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	local pickupMultiplier = if aggregateSelfFeed then eligibleCount / perTickLimit else 1
 	local startIndex = (state.ejectCycleOffset % eligibleCount) + 1
 	local firedAny = false
 
@@ -3125,13 +3128,7 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * sin + aim.Y * cos
 			), aim)
 			local cost = ejectedCostForCell(cell)
-			if aggregateSelfFeed and cost > 0 then
-				for _, feedingCell in eligible do
-					if self.cells[feedingCell.id] and feedingCell.mass > cost then
-						self:_setCellMass(feedingCell, feedingCell.mass - cost)
-					end
-				end
-			elseif cost > 0 then
+			if not aggregateSelfFeed and cost > 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
 			local inheritedVelocity = Vector2.zero
@@ -3153,6 +3150,16 @@ function GameService:_ejectMassFromCells(state, cells)
 				inheritedVelocity
 			)
 			firedAny = true
+		end
+	end
+	if firedAny and aggregateSelfFeed then
+		local cost = ejectedCostForCell(eligible[1])
+		if cost > 0 then
+			for _, feedingCell in eligible do
+				if self.cells[feedingCell.id] and feedingCell.mass > cost then
+					self:_setCellMass(feedingCell, feedingCell.mass - cost)
+				end
+			end
 		end
 	end
 	state.ejectCycleOffset = (startIndex - 1 + perTickLimit) % eligibleCount

@@ -751,9 +751,13 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
-	-- Server batches self-feed into one pellet carrying the combined gain
-	-- from all source cells. Mirror that batching visually.
-	local perTickLimit = if targetCell then 1 else math.min(eligibleCount, visualLimit)
+	-- Server spreads the combined self-feed gain over a small visual group.
+	local perTickLimit = if targetCell
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, visualLimit)
 	local startIndex = (self.predictedEjectCycleOffset % eligibleCount) + 1
 	for step = 0, perTickLimit - 1 do
 		local entry = eligible[((startIndex - 1 + step) % eligibleCount) + 1]

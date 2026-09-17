@@ -332,8 +332,8 @@ Config.Ejected = {
 	SelfRecoveryEndScore = 2400000,
 	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 380,
-	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
+	Speed = 450,
+	DragPerSecond = 0.85,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -368,6 +368,7 @@ Config.Ejected = {
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
 	SelfFeedCenterRadius = 180,
+	SelfFeedVisualPellets = 3,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet

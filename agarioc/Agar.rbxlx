@@ -3865,9 +3865,13 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
-	-- Server batches self-feed into one pellet carrying the combined gain
-	-- from all source cells. Mirror that batching visually.
-	local perTickLimit = if targetCell then 1 else math.min(eligibleCount, visualLimit)
+	-- Server spreads the combined self-feed gain over a small visual group.
+	local perTickLimit = if targetCell
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, visualLimit)
 	local startIndex = (self.predictedEjectCycleOffset % eligibleCount) + 1
 	for step = 0, perTickLimit - 1 do
 		local entry = eligible[((startIndex - 1 + step) % eligibleCount) + 1]
@@ -7104,8 +7108,8 @@ Config.Ejected = {
 	SelfRecoveryEndScore = 2400000,
 	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 380,
-	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
+	Speed = 450,
+	DragPerSecond = 0.85,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -7140,6 +7144,7 @@ Config.Ejected = {
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
 	SelfFeedCenterRadius = 180,
+	SelfFeedVisualPellets = 3,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
@@ -11397,14 +11402,17 @@ function GameService:_ejectMassFromCells(state, cells)
 		end
 	end
 
-	-- In self-feed mode one homing pellet represents every feeding cell.
-	-- It grants the same combined mass without rendering up to 31 pellets
-	-- per fire interval. Outward feeding still emits once from every cell.
+	-- In self-feed mode a small configurable group of pellets represents
+	-- every feeding cell. Their combined gain is unchanged, but the feed
+	-- looks fuller without rendering up to 31 pellets every interval.
 	local aggregateSelfFeed = targetCellId ~= nil and eligibleCount &gt; 1
-	local pickupMultiplier = if aggregateSelfFeed then eligibleCount else 1
 	local perTickLimit = if aggregateSelfFeed
-		then 1
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
 		else math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	local pickupMultiplier = if aggregateSelfFeed then eligibleCount / perTickLimit else 1
 	local startIndex = (state.ejectCycleOffset % eligibleCount) + 1
 	local firedAny = false
 
@@ -11425,13 +11433,7 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * sin + aim.Y * cos
 			), aim)
 			local cost = ejectedCostForCell(cell)
-			if aggregateSelfFeed and cost &gt; 0 then
-				for _, feedingCell in eligible do
-					if self.cells[feedingCell.id] and feedingCell.mass &gt; cost then
-						self:_setCellMass(feedingCell, feedingCell.mass - cost)
-					end
-				end
-			elseif cost &gt; 0 then
+			if not aggregateSelfFeed and cost &gt; 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
 			local inheritedVelocity = Vector2.zero
@@ -11453,6 +11455,16 @@ function GameService:_ejectMassFromCells(state, cells)
 				inheritedVelocity
 			)
 			firedAny = true
+		end
+	end
+	if firedAny and aggregateSelfFeed then
+		local cost = ejectedCostForCell(eligible[1])
+		if cost &gt; 0 then
+			for _, feedingCell in eligible do
+				if self.cells[feedingCell.id] and feedingCell.mass &gt; cost then
+					self:_setCellMass(feedingCell, feedingCell.mass - cost)
+				end
+			end
 		end
 	end
 	state.ejectCycleOffset = (startIndex - 1 + perTickLimit) % eligibleCount
