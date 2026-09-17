@@ -81,6 +81,12 @@ Config.Cell = {
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	MaxSplitPiecesPerCommand = 16,
+	-- Spawn close to the parent and let boost create the launch. Spawning two
+	-- radii ahead caused authoritative collision before the visual got there.
+	SplitSpawnOffsetRadiusScale = 0.35,
+	SplitConsumeGraceSeconds = 0.18,
+	SplitPushGraceSeconds = 0.28,
+	SplitPushMaxOverlapPerStep = 6,
 	-- Client interpolation trails boosted cells slightly. Swept eating could
 	-- therefore consume something the local blob had never visually reached.
 	SweptEatingEnabled = false,
@@ -121,6 +127,7 @@ Config.Cell = {
 	-- ~20° total spread. Straighter = pieces stay in a tight column
 	-- along aim instead of forming a cluster.
 	MultiSplitFanRadians = 0.06,
+	MultiSplitStaggerRadiusScale = 0.3,
 
 	-- ==================================================================
 	-- CANNIBALIZE (AUTOMATIC): a bigger own-cell will automatically
@@ -496,16 +503,16 @@ Config.Render = {
 	-- Split feel: longer duration + gentler sharpness so cells glide out
 	-- of the parent instead of teleporting. SourceFollowSeconds controls
 	-- how long the child hangs on the parent before committing.
-	SplitSpawnAnimationSeconds = 0.55, -- shorter glide than before; matches server timing
-	SplitSpawnAnimationStartRadiusScale = 0.85, -- was 1; child grows out of parent
-	SplitSpawnAnimationEndDistance = 2,
-	SplitSpawnAnimationSharpness = 9, -- softer interp
+	SplitSpawnAnimationSeconds = 0.68,
+	SplitSpawnAnimationStartRadiusScale = 0.72,
+	SplitSpawnAnimationEndDistance = 1,
+	SplitSpawnAnimationSharpness = 18,
 	-- SourceFollow and TargetLead were making display lag the server,
 	-- so a split into a virus popped BEFORE the visual reached the
 	-- virus. Near-zero here = visual tracks server position tightly.
-	SplitSpawnAnimationSourceFollowSeconds = 0.02, -- was 0.20; don't hang on parent
-	SplitSpawnAnimationTargetSharpness = 22, -- was 10; catch server pos quickly
-	SplitSpawnAnimationTargetLeadSeconds = 0.02, -- was 0.14; barely lead ahead
+	SplitSpawnAnimationSourceFollowSeconds = 0.1,
+	SplitSpawnAnimationTargetSharpness = 11,
+	SplitSpawnAnimationTargetLeadSeconds = 0.06,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,

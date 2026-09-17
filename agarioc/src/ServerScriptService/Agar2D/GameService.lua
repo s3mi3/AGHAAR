@@ -1480,7 +1480,7 @@ function GameService:_respawnPlayer(state)
 	self:_spawnPlayerCell(state, state.center, startMassForLevel(state.accountLevel), Vector2.zero)
 end
 
-function GameService:_spawnPlayerCell(state, pos: Vector2, mass: number, boost: Vector2)
+function GameService:_spawnPlayerCell(state, pos: Vector2, mass: number, boost: Vector2, isSplitChild: boolean?)
 	if #state.cells >= Config.Player.MaxCells then
 		return nil
 	end
@@ -1499,6 +1499,12 @@ function GameService:_spawnPlayerCell(state, pos: Vector2, mass: number, boost: 
 		boost = boost,
 		spawnedAt = now,
 		canRecombineAt = now + recombineDelayForMass(mass),
+		canConsumeAt = if isSplitChild
+			then now + math.max(Config.Cell.SplitConsumeGraceSeconds or 0, 0)
+			else now,
+		splitPushGraceUntil = if isSplitChild
+			then now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+			else nil,
 	}
 
 	self.cells[id] = cell
@@ -2782,6 +2788,7 @@ function GameService:_splitPlayer(state)
 			local childMass = cell.mass * 0.5
 			self:_setCellMass(cell, childMass)
 			cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
+			cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 			local childRadius = massToRadius(childMass)
 			-- If frozen, spawn the child with zero velocity but nudge it
 			-- a short distance along aim so the group has a direction
@@ -2798,7 +2805,7 @@ function GameService:_splitPlayer(state)
 			else
 				spawnPos = self:_adjustSpawnPositionForBarriers(
 					cell.pos,
-					cell.pos + dir * (cell.radius * 2 + 4),
+					cell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
 					childRadius
 				)
 			end
@@ -2806,7 +2813,8 @@ function GameService:_splitPlayer(state)
 				state,
 				spawnPos,
 				childMass,
-				childVelocity
+				childVelocity,
+				true
 			)
 			if child then
 				child.sweptEatStartPos = cell.pos
@@ -2852,6 +2860,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
+		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 
 		for i = 1, newChildren do
 			local fanSpread = math.max(Config.Cell.MultiSplitFanRadians or 0, 0)
@@ -2865,7 +2874,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 				aim.X * sin + aim.Y * cos
 			), aim)
 
-			local staggerStep = pieceRadius * 1.4
+			local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.3)
 			local staggerOffset = (i - 1) * staggerStep
 			local childVelocity
 			local spawnPos
@@ -2878,12 +2887,15 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 				childVelocity = dir * self:_splitImpulseForMass(originalMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
 					cell.pos,
-					cell.pos + dir * (cell.radius * 2 + 4 + staggerOffset),
+					cell.pos + dir * (
+						pieceRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)
+						+ staggerOffset
+					),
 					pieceRadius
 				)
 			end
 
-			local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity)
+			local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity, true)
 			if child then
 				child.sweptEatStartPos = cell.pos
 			end
@@ -2924,6 +2936,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 
 	self:_setCellMass(biggest, pieceMass)
 	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
+	biggest.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 
 	for i = 1, newChildren do
 		-- Tight fan across aim so children fly nearly straight. Config
@@ -2944,7 +2957,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		local spawnPos
 		-- Stagger children along aim so a straight-line (fan~=0) split
 		-- doesn't spawn every child on the exact same pixel.
-		local staggerStep = pieceRadius * 1.4
+		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.3)
 		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
@@ -2955,12 +2968,15 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 			childVelocity = dir * self:_splitImpulseForMass(originalMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				biggest.pos,
-				biggest.pos + dir * (biggest.radius * 2 + 4 + staggerOffset),
+				biggest.pos + dir * (
+					pieceRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)
+					+ staggerOffset
+				),
 				pieceRadius
 			)
 		end
 
-		local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity)
+		local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity, true)
 		if child then
 			child.sweptEatStartPos = biggest.pos
 		end
@@ -3855,7 +3871,14 @@ function GameService:_resolveSamePlayerPush()
 							dist = 0
 						end
 
-						local overlap = math.min((minDist - dist) * pushStrength, overlapCap)
+						local pairOverlapCap = overlapCap
+						if now < math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0) then
+							pairOverlapCap = math.min(
+								pairOverlapCap,
+								math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
+							)
+						end
+						local overlap = math.min((minDist - dist) * pushStrength, pairOverlapCap)
 						local totalMass = math.max(a.mass + b.mass, 1)
 						local aShare = b.mass / totalMass
 						local bShare = a.mass / totalMass
@@ -4002,6 +4025,9 @@ end
 
 function GameService:_queueEatEventsForCell(cell, events)
 	local now = os.clock()
+	if now < (cell.canConsumeAt or 0) then
+		return
+	end
 	local potentialMass = cell.mass
 	local sweepStart, sweepEnd, sweepDistance = self:_cellSweepSegment(cell)
 	local queuedFood = if sweepStart then {} else nil
@@ -4258,7 +4284,7 @@ end
 
 function GameService:_applyEatEvent(event)
 	local cell = self.cells[event.eaterId]
-	if not cell then
+	if not cell or os.clock() < (cell.canConsumeAt or 0) then
 		return
 	end
 
@@ -4470,20 +4496,22 @@ function GameService:_burstCell(cell): boolean
 	local massPerPiece = cell.mass / pieces
 	self:_setCellMass(cell, massPerPiece)
 	cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
+	cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 
 	for i = 1, pieces - 1 do
 		local dir = Vec2.fromAngle((math.pi * 2) * (i / (pieces - 1)))
 		local childRadius = massToRadius(massPerPiece)
 		local spawnPos = self:_adjustSpawnPositionForBarriers(
 			cell.pos,
-			cell.pos + dir * (cell.radius * 2 + 4),
+			cell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
 			childRadius
 		)
 		local child = self:_spawnPlayerCell(
 			state,
 			spawnPos,
 			massPerPiece,
-			dir * self:_splitImpulseForMass(cell.mass, 0.85)
+			dir * self:_splitImpulseForMass(cell.mass, 0.85),
+			true
 		)
 		if child then
 			child.sweptEatStartPos = cell.pos

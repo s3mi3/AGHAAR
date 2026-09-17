@@ -1650,15 +1650,23 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	local sourceFollowSeconds = math.max(Config.Render.SplitSpawnAnimationSourceFollowSeconds or 0.12, 0.001)
 	local sourceAlpha = math.exp(-elapsed / sourceFollowSeconds)
 	local launchOffset = initialOffset:Lerp(liveOffset, sourceAlpha)
-	local decay = math.exp(-elapsed * (3.7 / duration))
-	local visualOffset = launchOffset * decay
-	state.radius = targetRadius
+	-- Smoothstep gives the launch zero acceleration jumps at both ends.
+	-- The previous exponential decay moved most of the distance immediately,
+	-- which made split children look like they snapped out of the parent.
+	local progress = math.clamp(elapsed / duration, 0, 1)
+	local easedProgress = progress * progress * (3 - 2 * progress)
+	local visualOffset = launchOffset * (1 - easedProgress)
+	local startRadius = state.spawnAnimationStartRadius or targetRadius
+	state.radius = startRadius + (targetRadius - startRadius) * easedProgress
 	local desiredPos = self:_resolveCircleAgainstBarriers(smoothTarget + visualOffset, state.radius)
 	local smoothAlpha = 1 - math.exp(-dt * (Config.Render.SplitSpawnAnimationSharpness or 34))
 	state.displayPos = self:_resolveCircleAgainstBarriers(state.displayPos:Lerp(desiredPos, smoothAlpha), state.radius)
 
 	local endDistance = math.max(Config.Render.SplitSpawnAnimationEndDistance or 2, 0)
-	if (elapsed >= duration and visualOffset.Magnitude <= endDistance) or elapsed >= duration * 1.65 then
+	local remainingDistance = (state.displayPos - desiredPos).Magnitude
+	if (elapsed >= duration and visualOffset.Magnitude <= endDistance and remainingDistance <= math.max(endDistance, 2))
+		or elapsed >= duration * 1.65
+	then
 		state.spawnAnimatingUntil = nil
 		state.spawnAnimationStartedAt = nil
 		state.spawnAnimationOrigin = nil
