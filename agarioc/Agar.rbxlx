@@ -11197,79 +11197,73 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 end
 
 function GameService:_multiSplitBiggest(state, totalPieces: number)
-	-- Splits the biggest eligible cell into `totalPieces` equal pieces
-	-- (parent keeps 1/totalPieces of its mass, and (totalPieces - 1)
-	-- children spawn along aim, fanned slightly). Each successive child
-	-- inherits the previous child's forward launch, so E/R behave like a
-	-- chained split and extend downrange instead of forming one row.
+	-- Perform real sequential half-splits along one leading lineage.
+	-- This uses the same mass, spawn, and launch rules as pressing Space,
+	-- but adds only enough children to reach the requested count from one
+	-- starting cell (E: 3 total, R: 4 total).
 	totalPieces = math.max(math.floor(totalPieces), 2)
-	local cells = self:_sortedPlayerCells(state)
-	local biggest = cells[1]
-	if not biggest then
+	local splitsRemaining = math.min(totalPieces - 1, Config.Player.MaxCells - #state.cells)
+	if splitsRemaining &lt;= 0 then
 		return
 	end
 
-	local freeSlots = Config.Player.MaxCells - #state.cells
-	if freeSlots &lt;= 0 then
-		return
+	-- On repeated E/R presses, continue from the eligible cell nearest
+	-- the cursor rather than returning to an equal-mass trailing parent.
+	local chainCell = nil
+	local bestDistanceSquared = math.huge
+	for _, cell in self:_sortedPlayerCells(state) do
+		if cell.mass &gt;= Config.Cell.SplitMinMass * 2 then
+			local distanceSquared
+			if state.input.target then
+				distanceSquared = Vec2.distanceSquared(cell.pos, state.input.target)
+			else
+				local aim = splitAimForState(state)
+				distanceSquared = -cell.pos:Dot(aim)
+			end
+			if distanceSquared &lt; bestDistanceSquared then
+				bestDistanceSquared = distanceSquared
+				chainCell = cell
+			end
+		end
 	end
 
-	local minPiece = math.max(Config.Cell.SplitMinMass or 1, 1)
-	local piecesAllowedByMass = math.max(math.floor(biggest.mass / minPiece), 1)
-	local pieces = math.min(totalPieces, freeSlots + 1, piecesAllowedByMass)
-	if pieces &lt; 2 then
-		return
-	end
+	for _ = 1, splitsRemaining do
+		if not chainCell
+			or not self.cells[chainCell.id]
+			or chainCell.mass &lt; Config.Cell.SplitMinMass * 2
+		then
+			break
+		end
 
-	local newChildren = pieces - 1
-	local pieceMass = biggest.mass / pieces
-	local pieceRadius = massToRadius(pieceMass)
-	local aim = splitAimForCell(state, biggest)
+		local dir = splitAimForCell(state, chainCell)
+		local childMass = chainCell.mass * 0.5
+		self:_setCellMass(chainCell, childMass)
+		local now = os.clock()
+		chainCell.canRecombineAt = now + recombineDelayForMass(chainCell.mass)
+		chainCell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 
-	self:_setCellMass(biggest, pieceMass)
-	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
-	biggest.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
-
-	local chainedBoost = biggest.boost or Vector2.zero
-	for i = 1, newChildren do
-		-- Tight fan across aim so children fly nearly straight. Config
-		-- knob Cell.MultiSplitFanRadians controls the total spread; 0
-		-- fires everything exactly on aim.
-		local fanSpread = math.max(Config.Cell.MultiSplitFanRadians or 0, 0)
-		local fanIndex = i - (newChildren + 1) * 0.5
-		local perChild = if newChildren &gt; 1 then fanSpread / (newChildren - 1) else 0
-		local fanAngle = fanIndex * perChild
-		local dir = rotateDirection(aim, fanAngle)
-
+		local childRadius = massToRadius(childMass)
 		local childVelocity
 		local spawnPos
-		-- Stagger children along aim so a straight-line (fan~=0) split
-		-- doesn't spawn every child on the exact same pixel.
-		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.18)
-		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
-			local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
-			spawnPos = self:_clampToWorld(biggest.pos + dir * frozenNudge, pieceRadius)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			spawnPos = self:_clampToWorld(chainCell.pos + dir * frozenNudge, childRadius)
 		else
-			-- Feed the previous launch into the next one. This is the
-			-- momentum chain that makes later pieces travel farther.
-			childVelocity = self:_splitLaunchBoost({ boost = chainedBoost }, dir, pieceMass)
-			chainedBoost = childVelocity
+			childVelocity = self:_splitLaunchBoost(chainCell, dir, childMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
-				biggest.pos,
-				biggest.pos + dir * (
-					pieceRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)
-					+ staggerOffset
-				),
-				pieceRadius
+				chainCell.pos,
+				chainCell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
+				childRadius
 			)
 		end
 
-		local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity, true)
-		if child then
-			child.sweptEatStartPos = biggest.pos
+		local child = self:_spawnPlayerCell(state, spawnPos, childMass, childVelocity, true)
+		if not child then
+			break
 		end
+		child.sweptEatStartPos = chainCell.pos
+		chainCell = child
 	end
 end
 
