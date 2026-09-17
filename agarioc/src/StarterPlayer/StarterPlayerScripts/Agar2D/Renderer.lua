@@ -717,6 +717,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 
 	-- Match the server's receiver selection: the cell nearest the cursor
 	-- receives pellets and does not also emit a visual-only pellet.
+	local targetCell = nil
 	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" and #eligible > 1 then
 		local targetIndex = nil
 		local bestDistanceSquared = math.huge
@@ -729,6 +730,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			end
 		end
 		if targetIndex then
+			targetCell = eligible[targetIndex].state
 			table.remove(eligible, targetIndex)
 		end
 	end
@@ -745,7 +747,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		-- world position. Falls back to the shared move-aim direction
 		-- when the target is missing or degenerate (cursor on cell).
 		local dir = fallbackDir
-		if typeof(target) == "Vector2" then
+		if targetCell then
+			local delta = targetCell.displayPos - cell.displayPos
+			if delta.Magnitude > 0.001 then
+				dir = delta.Unit
+			end
+		elseif typeof(target) == "Vector2" then
 			local delta = target - cell.displayPos
 			if delta.Magnitude > 0.001 then
 				dir = delta.Unit
@@ -782,6 +789,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			extrapolate = true,
 			predicted = true,
 			sourceCell = cell,
+			targetCell = targetCell,
 			worldPadding = Config.Ejected.Radius,
 			consumeAfter = now + math.max(Config.Ejected.OwnerReeatDelay or 0, Config.Ejected.LocalVisualMinVisibleSeconds or 0),
 			expiresAt = now + (Config.Ejected.LocalVisualLifeSeconds or 0.8),
@@ -1676,6 +1684,19 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
+	local targetCell = state.targetCell
+	if targetCell and targetCell.confirmed and targetCell.displayPos then
+		local toTarget = targetCell.displayPos - state.displayPos
+		local speed = velocity.Magnitude
+		if speed > 0.001 and toTarget.Magnitude > 0.001 then
+			local turnAlpha = 1 - math.exp(-math.max(Config.Ejected.TargetHomingSharpness or 0, 0) * dt)
+			local blendedDirection = velocity.Unit:Lerp(toTarget.Unit, turnAlpha)
+			local direction = if blendedDirection.Magnitude > 0.001
+				then blendedDirection.Unit
+				else toTarget.Unit
+			velocity = direction * speed
+		end
+	end
 	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)

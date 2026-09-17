@@ -3077,7 +3077,10 @@ function GameService:_ejectMassFromCells(state, cells)
 		local index = ((startIndex - 1 + step) % eligibleCount) + 1
 		local cell = eligible[index]
 		if self.cells[cell.id] and canCellFireEjected(cell) then
-			local aim = self:_cellAimDirection(state, cell)
+			local targetCell = targetCellId and self.cells[targetCellId] or nil
+			local aim = if targetCell
+				then Vec2.safeUnit(targetCell.pos - cell.pos, self:_cellAimDirection(state, cell))
+				else self:_cellAimDirection(state, cell)
 			local halfCone = math.rad(Config.Ejected.ConeDegrees) * 0.5
 			local angle = self.rng:NextNumber(-halfCone, halfCone)
 			local cos = math.cos(angle)
@@ -3256,6 +3259,20 @@ function GameService:_moveEjected(dt: number)
 
 	for id, ejected in self.ejected do
 		ejected.previousPos = ejected.pos
+		local targetCell = ejected.targetCellId and self.cells[ejected.targetCellId] or nil
+		if targetCell and targetCell.ownerUserId == ejected.ownerUserId then
+			local toTarget = targetCell.pos - ejected.pos
+			local speed = ejected.vel.Magnitude
+			if speed > 0.001 and toTarget.Magnitude > 0.001 then
+				local turnAlpha = 1 - math.exp(-math.max(Config.Ejected.TargetHomingSharpness or 0, 0) * dt)
+				local direction = Vec2.safeUnit(ejected.vel.Unit:Lerp(toTarget.Unit, turnAlpha), toTarget.Unit)
+				ejected.vel = direction * speed
+			end
+		elseif ejected.targetCellId then
+			-- A merged or removed receiver should not leave the pellet
+			-- locked to a cell that no longer exists.
+			ejected.targetCellId = nil
+		end
 		local nextPos = ejected.pos + ejected.vel * dt
 		local worldMin, worldMax = self:_worldBounds()
 		local minX = worldMin.X + ejected.radius

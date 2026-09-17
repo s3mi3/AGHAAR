@@ -332,6 +332,7 @@ Config.Ejected = {
 	SelfRecoveryCurveExponent = 0.7,
 	Speed = 460, -- was 520; slightly slower so pellets don't overshoot cluster
 	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
+	TargetHomingSharpness = 12,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -346,7 +347,7 @@ Config.Ejected = {
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
 	OwnerReeatDelay = 0.1,
-	LocalVisualMaxCellsPerShotTick = 16,
+	LocalVisualMaxCellsPerShotTick = 32,
 	LocalVisualLifeSeconds = 1.25,
 	LocalVisualMinVisibleSeconds = 0.08,
 	OwnerTrimRetainRadius = 1800,
@@ -354,9 +355,9 @@ Config.Ejected = {
 	PerPlayerMaxCount = 384,
 	LoadPerPlayerMaxCount = 240,
 	HeavyLoadPerPlayerMaxCount = 160,
-	MaxCellsPerShotTick = 16,
-	LoadMaxCellsPerShotTick = 12,
-	HeavyLoadMaxCellsPerShotTick = 8,
+	MaxCellsPerShotTick = 32,
+	LoadMaxCellsPerShotTick = 32,
+	HeavyLoadMaxCellsPerShotTick = 32,
 	FireHz = 15,
 	MaxEjectsPerStep = 6,
 	ConeDegrees = 0, -- zero spread; pellet flies exactly at cursor
@@ -370,8 +371,8 @@ Config.Ejected = {
 	-- path. Enemies can still eat them normally, and after the pellet
 	-- has lived past LockedTargetTimeout seconds the lock releases
 	-- (so misses don't produce eternally-uneatable pellets).
-	LockPelletsToTarget = false,
-	LockedTargetTimeout = 3.0,
+	LockPelletsToTarget = true,
+	LockedTargetTimeout = 1.25,
 }
 
 Config.Network = {
