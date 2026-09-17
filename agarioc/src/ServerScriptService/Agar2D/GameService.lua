@@ -2772,18 +2772,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R: split the biggest eligible cell into 4 total pieces.
+		-- R: add three chained children along one leading lineage.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.DoubleSplitPieces or 4)
+			self:_multiSplitBiggest(state, Config.Cell.RSplitPieces or 4)
 		end
 
-		-- E: split the biggest eligible cell into 3 total pieces.
+		-- E: run two full split generations.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.TripleSplitPieces or 3)
+			self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner => cells skip
@@ -2947,18 +2947,13 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 end
 
 function GameService:_multiSplitBiggest(state, totalPieces: number)
-	-- Perform real sequential half-splits along one leading lineage.
-	-- This uses the same mass, spawn, and launch rules as pressing Space,
-	-- but adds only enough children to reach the requested count from one
-	-- starting cell (E: 3 total, R: 4 total).
+	-- R keeps a fixed-count chain through the leading cell.
 	totalPieces = math.max(math.floor(totalPieces), 2)
 	local splitsRemaining = math.min(totalPieces - 1, Config.Player.MaxCells - #state.cells)
 	if splitsRemaining <= 0 then
 		return
 	end
 
-	-- On repeated E/R presses, continue from the eligible cell nearest
-	-- the cursor rather than returning to an equal-mass trailing parent.
 	local chainCell = nil
 	local bestDistanceSquared = math.huge
 	for _, cell in self:_sortedPlayerCells(state) do
@@ -3014,6 +3009,17 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		end
 		child.sweptEatStartPos = chainCell.pos
 		chainCell = child
+	end
+end
+
+function GameService:_repeatSplitPlayer(state, generations: number)
+	-- E is two actual Space presses: every eligible cell divides on each
+	-- generation, subject to minimum mass and the global cell cap.
+	for _ = 1, math.max(math.floor(generations), 1) do
+		if #state.cells >= Config.Player.MaxCells then
+			break
+		end
+		self:_splitPlayer(state)
 	end
 end
 

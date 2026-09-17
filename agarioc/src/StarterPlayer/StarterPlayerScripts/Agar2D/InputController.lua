@@ -174,10 +174,10 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			self.ejectToken += 1
 			self:_predictEject()
 		elseif input.KeyCode == Enum.KeyCode.R then
-			-- Add 3 children from the biggest cell (4 total from one cell).
+			-- Add 3 chained children along one leading lineage.
 			self.doubleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.E then
-			-- Add 2 children from the biggest cell (3 total from one cell).
+			-- Two full Space-style generations; every eligible cell divides.
 			self.tripleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.F then
 			-- Freeze toggle (Config.Freeze). Mirror the toggle locally so

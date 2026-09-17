@@ -103,14 +103,14 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: add a fixed number of pieces from the biggest cell.
-	-- E adds 2 children (3 total from one cell); R adds 3 (4 total).
+	-- E repeats the normal Space split for every eligible cell twice.
+	-- R keeps the four-cell single-lineage chained split.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	DoubleSplitPieces = 4, -- R
-	TripleSplitPieces = 3, -- E
+	RSplitPieces = 4,
+	ESplitGenerations = 2,
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
