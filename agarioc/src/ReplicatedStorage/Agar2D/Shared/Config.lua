@@ -104,12 +104,12 @@ Config.Cell = {
 
 	-- ==================================================================
 	-- E repeats the normal Space split for every eligible cell twice.
-	-- R keeps the four-cell single-lineage chained split.
+	-- R repeats it three times.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	RSplitPieces = 4,
+	RSplitGenerations = 3,
 	ESplitGenerations = 2,
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.

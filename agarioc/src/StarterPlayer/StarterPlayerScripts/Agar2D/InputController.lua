@@ -174,7 +174,7 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			self.ejectToken += 1
 			self:_predictEject()
 		elseif input.KeyCode == Enum.KeyCode.R then
-			-- Add 3 chained children along one leading lineage.
+			-- Three full Space-style generations; every eligible cell divides.
 			self.doubleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.E then
 			-- Two full Space-style generations; every eligible cell divides.

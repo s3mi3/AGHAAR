@@ -2772,11 +2772,11 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R: add three chained children along one leading lineage.
+		-- R: run three full Space-style split generations.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.RSplitPieces or 4)
+			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
 		end
 
 		-- E: run two full split generations.
@@ -2946,74 +2946,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 	end
 end
 
-function GameService:_multiSplitBiggest(state, totalPieces: number)
-	-- R keeps a fixed-count chain through the leading cell.
-	totalPieces = math.max(math.floor(totalPieces), 2)
-	local splitsRemaining = math.min(totalPieces - 1, Config.Player.MaxCells - #state.cells)
-	if splitsRemaining <= 0 then
-		return
-	end
-
-	local chainCell = nil
-	local bestDistanceSquared = math.huge
-	for _, cell in self:_sortedPlayerCells(state) do
-		if cell.mass >= Config.Cell.SplitMinMass * 2 then
-			local distanceSquared
-			if state.input.target then
-				distanceSquared = Vec2.distanceSquared(cell.pos, state.input.target)
-			else
-				local aim = splitAimForState(state)
-				distanceSquared = -cell.pos:Dot(aim)
-			end
-			if distanceSquared < bestDistanceSquared then
-				bestDistanceSquared = distanceSquared
-				chainCell = cell
-			end
-		end
-	end
-
-	for _ = 1, splitsRemaining do
-		if not chainCell
-			or not self.cells[chainCell.id]
-			or chainCell.mass < Config.Cell.SplitMinMass * 2
-		then
-			break
-		end
-
-		local dir = splitAimForCell(state, chainCell)
-		local childMass = chainCell.mass * 0.5
-		self:_setCellMass(chainCell, childMass)
-		local now = os.clock()
-		chainCell.canRecombineAt = now + recombineDelayForMass(chainCell.mass)
-		chainCell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
-
-		local childRadius = massToRadius(childMass)
-		local childVelocity
-		local spawnPos
-		if state.frozen then
-			childVelocity = Vector2.zero
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
-			spawnPos = self:_clampToWorld(chainCell.pos + dir * frozenNudge, childRadius)
-		else
-			childVelocity = self:_splitLaunchBoost(chainCell, dir, childMass)
-			spawnPos = self:_adjustSpawnPositionForBarriers(
-				chainCell.pos,
-				chainCell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
-				childRadius
-			)
-		end
-
-		local child = self:_spawnPlayerCell(state, spawnPos, childMass, childVelocity, true)
-		if not child then
-			break
-		end
-		child.sweptEatStartPos = chainCell.pos
-		chainCell = child
-	end
-end
-
 function GameService:_repeatSplitPlayer(state, generations: number)
-	-- E is two actual Space presses: every eligible cell divides on each
+	-- E/R repeat actual Space presses: every eligible cell divides on each
 	-- generation, subject to minimum mass and the global cell cap.
 	for _ = 1, math.max(math.floor(generations), 1) do
 		if #state.cells >= Config.Player.MaxCells then
