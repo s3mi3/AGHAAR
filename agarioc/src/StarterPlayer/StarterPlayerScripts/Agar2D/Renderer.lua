@@ -11,7 +11,7 @@ local Renderer = {}
 Renderer.__index = Renderer
 local FAST_OWN_CELL_ROW_BYTES = 20
 local FAST_REMOTE_CELL_ROW_BYTES = 28
-local FAST_EJECTED_ROW_BYTES = 21
+local FAST_EJECTED_ROW_BYTES = 29
 local DEFAULT_AVATAR_DISPLAY_MODE = "face"
 local AVATAR_THUMBNAIL_TYPES = {
 	face = Enum.ThumbnailType.HeadShot,
@@ -258,7 +258,7 @@ end
 
 local function decodeEjectedBuffer(payload)
 	if typeof(payload) ~= "buffer" then
-		return expandPackedRows(payload, 4)
+		return expandPackedRows(payload, 6)
 	end
 
 	local rows = {}
@@ -271,6 +271,8 @@ local function decodeEjectedBuffer(payload)
 			buffer.readf32(payload, offset + 4),
 			buffer.readf32(payload, offset + 8),
 			if payloadType == 1 then ownerOrColor else colorPayloadFromPacked(ownerOrColor),
+			buffer.readf32(payload, offset + 21),
+			buffer.readf32(payload, offset + 25),
 		}
 		rowIndex += 1
 	end
@@ -888,7 +890,22 @@ function Renderer:setSnapshot(snapshot)
 			if packed[4] == snapshot.you then
 				self:_removePredictedEjectedNear(Vector2.new(packed[2], packed[3]))
 			end
-			self:_syncEntity(self.ejectedStates, packed[1], Vector2.new(packed[2], packed[3]), Config.Ejected.Radius, nil, self:_ejectedColor(packed[4]), nil, serial, receivedAt, false, "ejected")
+			local authoritativeVelocity = if typeof(packed[5]) == "number" and typeof(packed[6]) == "number"
+				then Vector2.new(packed[5], packed[6])
+				else nil
+			self:_syncEntity(
+				self.ejectedStates,
+				packed[1],
+				Vector2.new(packed[2], packed[3]),
+				Config.Ejected.Radius,
+				nil,
+				self:_ejectedColor(packed[4]),
+				{ velocity = authoritativeVelocity },
+				serial,
+				receivedAt,
+				false,
+				"ejected"
+			)
 		end
 
 		for _, packed in snapshot.cells or {} do
@@ -1198,7 +1215,9 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		state = {
 			displayPos = displayPos,
 			targetPos = pos,
-			velocity = Vector2.zero,
+			velocity = if kind == "ejected" and extra and extra.velocity
+				then extra.velocity
+				else Vector2.zero,
 			radius = displayRadius,
 			targetRadius = radius,
 			receivedAt = receivedAt,
@@ -1245,6 +1264,9 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		else
 			local elapsed = math.max(receivedAt - (state.receivedAt or receivedAt), 1 / Config.Simulation.NetworkHz)
 			state.velocity = (pos - state.targetPos) / elapsed
+			if kind == "ejected" and extra and extra.velocity then
+				state.velocity = extra.velocity
+			end
 			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
 				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale

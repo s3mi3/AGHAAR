@@ -3125,7 +3125,7 @@ local Renderer = {}
 Renderer.__index = Renderer
 local FAST_OWN_CELL_ROW_BYTES = 20
 local FAST_REMOTE_CELL_ROW_BYTES = 28
-local FAST_EJECTED_ROW_BYTES = 21
+local FAST_EJECTED_ROW_BYTES = 29
 local DEFAULT_AVATAR_DISPLAY_MODE = "face"
 local AVATAR_THUMBNAIL_TYPES = {
 	face = Enum.ThumbnailType.HeadShot,
@@ -3372,7 +3372,7 @@ end
 
 local function decodeEjectedBuffer(payload)
 	if typeof(payload) ~= "buffer" then
-		return expandPackedRows(payload, 4)
+		return expandPackedRows(payload, 6)
 	end
 
 	local rows = {}
@@ -3385,6 +3385,8 @@ local function decodeEjectedBuffer(payload)
 			buffer.readf32(payload, offset + 4),
 			buffer.readf32(payload, offset + 8),
 			if payloadType == 1 then ownerOrColor else colorPayloadFromPacked(ownerOrColor),
+			buffer.readf32(payload, offset + 21),
+			buffer.readf32(payload, offset + 25),
 		}
 		rowIndex += 1
 	end
@@ -4002,7 +4004,22 @@ function Renderer:setSnapshot(snapshot)
 			if packed[4] == snapshot.you then
 				self:_removePredictedEjectedNear(Vector2.new(packed[2], packed[3]))
 			end
-			self:_syncEntity(self.ejectedStates, packed[1], Vector2.new(packed[2], packed[3]), Config.Ejected.Radius, nil, self:_ejectedColor(packed[4]), nil, serial, receivedAt, false, "ejected")
+			local authoritativeVelocity = if typeof(packed[5]) == "number" and typeof(packed[6]) == "number"
+				then Vector2.new(packed[5], packed[6])
+				else nil
+			self:_syncEntity(
+				self.ejectedStates,
+				packed[1],
+				Vector2.new(packed[2], packed[3]),
+				Config.Ejected.Radius,
+				nil,
+				self:_ejectedColor(packed[4]),
+				{ velocity = authoritativeVelocity },
+				serial,
+				receivedAt,
+				false,
+				"ejected"
+			)
 		end
 
 		for _, packed in snapshot.cells or {} do
@@ -4312,7 +4329,9 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		state = {
 			displayPos = displayPos,
 			targetPos = pos,
-			velocity = Vector2.zero,
+			velocity = if kind == "ejected" and extra and extra.velocity
+				then extra.velocity
+				else Vector2.zero,
 			radius = displayRadius,
 			targetRadius = radius,
 			receivedAt = receivedAt,
@@ -4359,6 +4378,9 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		else
 			local elapsed = math.max(receivedAt - (state.receivedAt or receivedAt), 1 / Config.Simulation.NetworkHz)
 			state.velocity = (pos - state.targetPos) / elapsed
+			if kind == "ejected" and extra and extra.velocity then
+				state.velocity = extra.velocity
+			end
 			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
 				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale
@@ -12815,6 +12837,8 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
 			ejected.colorPayload,
+			round(ejected.vel.X, Config.Network.PositionPrecision),
+			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}
 	end
 
@@ -13029,7 +13053,7 @@ function GameService:_trimFastSnapshotRows(cellsPayload, ejectedPayload, spawner
 	write = 1
 	local ejectedOverflow = {}
 	for read = 1, #ejectedPayload do
-		local rowBytes = 21
+		local rowBytes = 29
 		if used + rowBytes &lt;= budget then
 			ejectedPayload[write] = ejectedPayload[read]
 			write += 1
@@ -13152,10 +13176,10 @@ function GameService:_packEjectedBuffer(rows)
 		return nil
 	end
 	if typeof(buffer) ~= "table" then
-		return self:_compactRows(rows, 4)
+		return self:_compactRows(rows, 6)
 	end
 
-	local rowBytes = 21
+	local rowBytes = 29
 	local payload = buffer.create(#rows * rowBytes)
 	local offset = 0
 	for _, row in rows do
@@ -13170,6 +13194,8 @@ function GameService:_packEjectedBuffer(rows)
 			buffer.writeu8(payload, offset + 12, 2)
 			buffer.writef64(payload, offset + 13, packedColorValue(ownerOrColor))
 		end
+		buffer.writef32(payload, offset + 21, row[5] or 0)
+		buffer.writef32(payload, offset + 25, row[6] or 0)
 		offset += rowBytes
 	end
 	return payload

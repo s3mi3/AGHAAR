@@ -4588,6 +4588,8 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
 			ejected.colorPayload,
+			round(ejected.vel.X, Config.Network.PositionPrecision),
+			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}
 	end
 
@@ -4802,7 +4804,7 @@ function GameService:_trimFastSnapshotRows(cellsPayload, ejectedPayload, spawner
 	write = 1
 	local ejectedOverflow = {}
 	for read = 1, #ejectedPayload do
-		local rowBytes = 21
+		local rowBytes = 29
 		if used + rowBytes <= budget then
 			ejectedPayload[write] = ejectedPayload[read]
 			write += 1
@@ -4925,10 +4927,10 @@ function GameService:_packEjectedBuffer(rows)
 		return nil
 	end
 	if typeof(buffer) ~= "table" then
-		return self:_compactRows(rows, 4)
+		return self:_compactRows(rows, 6)
 	end
 
-	local rowBytes = 21
+	local rowBytes = 29
 	local payload = buffer.create(#rows * rowBytes)
 	local offset = 0
 	for _, row in rows do
@@ -4943,6 +4945,8 @@ function GameService:_packEjectedBuffer(rows)
 			buffer.writeu8(payload, offset + 12, 2)
 			buffer.writef64(payload, offset + 13, packedColorValue(ownerOrColor))
 		end
+		buffer.writef32(payload, offset + 21, row[5] or 0)
+		buffer.writef32(payload, offset + 25, row[6] or 0)
 		offset += rowBytes
 	end
 	return payload
