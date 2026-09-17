@@ -126,11 +126,9 @@ Config.Cell = {
 	ClusterMaxSpeedRatio = 1.6,
 	CohesionStrength = 0,
 
-	-- All cells use the same camera-center aim vector so a split travels in
-	-- parallel lanes instead of converging side-to-side on the cursor.
-	-- These small fans preserve a little organic lateral movement.
-	SplitGroupFanRadians = 0.008,
-	MultiSplitFanRadians = 0.014,
+	-- Splits aim directly from each source cell at the cursor.
+	SplitGroupFanRadians = 0,
+	MultiSplitFanRadians = 0,
 	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
@@ -496,6 +494,7 @@ Config.Render = {
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
+	MergeAnimationSeconds = 0.42,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),

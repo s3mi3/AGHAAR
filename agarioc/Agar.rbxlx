@@ -4134,7 +4134,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 	end
 
 	local now = os.clock()
-	local duration = math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 	for _, id in ids do
 		local state = self.cellStates[id]
 		if not state then
@@ -4169,10 +4168,18 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 		end
 
 		if bestTarget then
+			local isMerge = sourceOwner ~= nil
+				and bestTarget.extra
+				and bestTarget.extra.ownerUserId == sourceOwner
+			local duration = if isMerge
+				then math.max(Config.Render.MergeAnimationSeconds or 0.42, 0.01)
+				else math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 			state.consumeTarget = bestTarget
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
+			state.consumeStartPos = state.displayPos
 			state.consumeStartRadius = state.radius
+			state.consumeIsMerge = isMerge
 			state.extrapolate = false
 			state.isOwn = false
 		else
@@ -4883,9 +4890,16 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local progress = math.clamp((now - (state.consumeStartedAt or now)) / duration, 0, 1)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
-			local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
-			state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
-			state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			if state.consumeIsMerge then
+				local easedProgress = progress * progress * (3 - 2 * progress)
+				local startPos = state.consumeStartPos or state.displayPos
+				state.displayPos = startPos:Lerp(targetPos, easedProgress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - easedProgress), 0)
+			else
+				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
+				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			end
 			if now &gt;= state.consumeUntil then
 				states[id] = nil
 				self.cellPool:release(id)
@@ -6774,11 +6788,9 @@ Config.Cell = {
 	ClusterMaxSpeedRatio = 1.6,
 	CohesionStrength = 0,
 
-	-- All cells use the same camera-center aim vector so a split travels in
-	-- parallel lanes instead of converging side-to-side on the cursor.
-	-- These small fans preserve a little organic lateral movement.
-	SplitGroupFanRadians = 0.008,
-	MultiSplitFanRadians = 0.014,
+	-- Splits aim directly from each source cell at the cursor.
+	SplitGroupFanRadians = 0,
+	MultiSplitFanRadians = 0,
 	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
@@ -7144,6 +7156,7 @@ Config.Render = {
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
+	MergeAnimationSeconds = 0.42,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -8260,6 +8273,14 @@ local function splitAimForState(state): Vector2
 		return Vec2.safeUnit(state.input.target - state.center, state.input.aim)
 	end
 	return Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
+end
+
+local function splitAimForCell(state, cell): Vector2
+	local fallback = splitAimForState(state)
+	if state.input.target then
+		return Vec2.safeUnit(state.input.target - cell.pos, fallback)
+	end
+	return fallback
 end
 
 -- Mass-scaled merge cooldown. Formula per Config.Cell comments:
@@ -10987,11 +11008,8 @@ function GameService:_splitPlayer(state)
 		end
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for index, cell in eligible do
-		local laneRatio = if #eligible &gt; 1 then (index - 1) / (#eligible - 1) - 0.5 else 0
-		local dir = rotateDirection(baseAim, laneRatio * groupSpread)
+	for _, cell in eligible do
+		local dir = splitAimForCell(state, cell)
 		local childMass = cell.mass * 0.5
 		self:_setCellMass(cell, childMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -11040,9 +11058,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		return
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for cellIndex, cell in cells do
+	for _, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
 		if freeSlots &lt;= 0 then
 			break
@@ -11061,8 +11077,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local laneRatio = if #cells &gt; 1 then (cellIndex - 1) / (#cells - 1) - 0.5 else 0
-		local aim = rotateDirection(baseAim, laneRatio * groupSpread)
+		local aim = splitAimForCell(state, cell)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -11131,7 +11146,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 	local newChildren = pieces - 1
 	local pieceMass = biggest.mass / pieces
 	local pieceRadius = massToRadius(pieceMass)
-	local aim = splitAimForState(state)
+	local aim = splitAimForCell(state, biggest)
 
 	self:_setCellMass(biggest, pieceMass)
 	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
@@ -13164,8 +13179,14 @@ function GameService:_appendCellConsumePayload(gone, removedCells)
 	for _, id in removedCells do
 		local consume = self.cellConsumeTargets[id]
 		if consume then
+			local eaterId = consume.eaterId
+			local visited = {}
+			while eaterId and self.cellConsumeTargets[eaterId] and not visited[eaterId] do
+				visited[eaterId] = true
+				eaterId = self.cellConsumeTargets[eaterId].eaterId
+			end
 			rows = rows or {}
-			rows[#rows + 1] = { id, consume.eaterId }
+			rows[#rows + 1] = { id, eaterId or consume.eaterId }
 		end
 	end
 	if rows then

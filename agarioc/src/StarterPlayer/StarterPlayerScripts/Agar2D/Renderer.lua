@@ -1020,7 +1020,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 	end
 
 	local now = os.clock()
-	local duration = math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 	for _, id in ids do
 		local state = self.cellStates[id]
 		if not state then
@@ -1055,10 +1054,18 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 		end
 
 		if bestTarget then
+			local isMerge = sourceOwner ~= nil
+				and bestTarget.extra
+				and bestTarget.extra.ownerUserId == sourceOwner
+			local duration = if isMerge
+				then math.max(Config.Render.MergeAnimationSeconds or 0.42, 0.01)
+				else math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 			state.consumeTarget = bestTarget
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
+			state.consumeStartPos = state.displayPos
 			state.consumeStartRadius = state.radius
+			state.consumeIsMerge = isMerge
 			state.extrapolate = false
 			state.isOwn = false
 		else
@@ -1769,9 +1776,16 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local progress = math.clamp((now - (state.consumeStartedAt or now)) / duration, 0, 1)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
-			local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
-			state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
-			state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			if state.consumeIsMerge then
+				local easedProgress = progress * progress * (3 - 2 * progress)
+				local startPos = state.consumeStartPos or state.displayPos
+				state.displayPos = startPos:Lerp(targetPos, easedProgress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - easedProgress), 0)
+			else
+				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
+				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			end
 			if now >= state.consumeUntil then
 				states[id] = nil
 				self.cellPool:release(id)

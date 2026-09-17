@@ -86,6 +86,14 @@ local function splitAimForState(state): Vector2
 	return Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
 end
 
+local function splitAimForCell(state, cell): Vector2
+	local fallback = splitAimForState(state)
+	if state.input.target then
+		return Vec2.safeUnit(state.input.target - cell.pos, fallback)
+	end
+	return fallback
+end
+
 -- Mass-scaled merge cooldown. Formula per Config.Cell comments:
 --   clamp(RecombineMinSeconds + (mass / RecombineScaleMass) * RecombinePerScaleMass,
 --         RecombineMinSeconds, RecombineMaxSeconds)
@@ -2811,11 +2819,8 @@ function GameService:_splitPlayer(state)
 		end
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for index, cell in eligible do
-		local laneRatio = if #eligible > 1 then (index - 1) / (#eligible - 1) - 0.5 else 0
-		local dir = rotateDirection(baseAim, laneRatio * groupSpread)
+	for _, cell in eligible do
+		local dir = splitAimForCell(state, cell)
 		local childMass = cell.mass * 0.5
 		self:_setCellMass(cell, childMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -2864,9 +2869,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		return
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for cellIndex, cell in cells do
+	for _, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
 		if freeSlots <= 0 then
 			break
@@ -2885,8 +2888,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local laneRatio = if #cells > 1 then (cellIndex - 1) / (#cells - 1) - 0.5 else 0
-		local aim = rotateDirection(baseAim, laneRatio * groupSpread)
+		local aim = splitAimForCell(state, cell)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -2955,7 +2957,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 	local newChildren = pieces - 1
 	local pieceMass = biggest.mass / pieces
 	local pieceRadius = massToRadius(pieceMass)
-	local aim = splitAimForState(state)
+	local aim = splitAimForCell(state, biggest)
 
 	self:_setCellMass(biggest, pieceMass)
 	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
@@ -4988,8 +4990,14 @@ function GameService:_appendCellConsumePayload(gone, removedCells)
 	for _, id in removedCells do
 		local consume = self.cellConsumeTargets[id]
 		if consume then
+			local eaterId = consume.eaterId
+			local visited = {}
+			while eaterId and self.cellConsumeTargets[eaterId] and not visited[eaterId] do
+				visited[eaterId] = true
+				eaterId = self.cellConsumeTargets[eaterId].eaterId
+			end
 			rows = rows or {}
-			rows[#rows + 1] = { id, consume.eaterId }
+			rows[#rows + 1] = { id, eaterId or consume.eaterId }
 		end
 	end
 	if rows then
