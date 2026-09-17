@@ -97,12 +97,9 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: chain multiple splits on one keypress.
-	-- Space  = 1x split (default, unchanged).
-	-- Q      = 2x split (double split) — server runs _splitPlayer twice
-	--          back-to-back. Needs SplitMinMass * 4 mass on a cell for
-	--          BOTH splits to fire; smaller cells only split once.
-	-- E      = 3x split (triple split) — same, needs SplitMinMass * 8.
+	-- MULTI-SPLIT: split every eligible cell into a fixed piece count.
+	-- Space creates one child per cell, Q makes 2 total pieces per cell,
+	-- and E makes 3 total pieces per cell.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
@@ -122,12 +119,12 @@ Config.Cell = {
 	ClusterMaxSpeedRatio = 1.6,
 	CohesionStrength = 0,
 
-	-- Multi-split fan (Q/E). Total spread in radians distributed across
-	-- all children. 0 = perfectly straight line along aim; ~0.35 =
-	-- ~20° total spread. Straighter = pieces stay in a tight column
-	-- along aim instead of forming a cluster.
-	MultiSplitFanRadians = 0.06,
-	MultiSplitStaggerRadiusScale = 0.3,
+	-- All cells use the same camera-center aim vector so a split travels in
+	-- parallel lanes instead of converging side-to-side on the cursor.
+	-- These small fans preserve a little organic lateral movement.
+	SplitGroupFanRadians = 0.028,
+	MultiSplitFanRadians = 0.035,
+	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
 	-- CANNIBALIZE (AUTOMATIC): a bigger own-cell will automatically
@@ -500,19 +497,16 @@ Config.Render = {
 	EjectedVisualCollisionMaxPush = 22,
 	EjectedVisualCollisionMaxOffset = 42,
 	SplitSpawnAnimationEnabled = true, -- smooth split arc instead of instant snap
-	-- Split feel: longer duration + gentler sharpness so cells glide out
-	-- of the parent instead of teleporting. SourceFollowSeconds controls
-	-- how long the child hangs on the parent before committing.
-	SplitSpawnAnimationSeconds = 0.68,
+	-- The launch follows its authoritative target immediately; smoothstep
+	-- controls the visual offset and radius growth without holding the child
+	-- on its parent.
+	SplitSpawnAnimationSeconds = 0.5,
 	SplitSpawnAnimationStartRadiusScale = 0.72,
 	SplitSpawnAnimationEndDistance = 1,
-	SplitSpawnAnimationSharpness = 18,
-	-- SourceFollow and TargetLead were making display lag the server,
-	-- so a split into a virus popped BEFORE the visual reached the
-	-- virus. Near-zero here = visual tracks server position tightly.
-	SplitSpawnAnimationSourceFollowSeconds = 0.1,
-	SplitSpawnAnimationTargetSharpness = 11,
-	SplitSpawnAnimationTargetLeadSeconds = 0.06,
+	SplitSpawnAnimationSharpness = 24,
+	SplitSpawnAnimationTargetSharpness = 20,
+	SplitSpawnAnimationTargetLeadSeconds = 0.08,
+	SplitSpawnAnimationMaxOverrunSeconds = 0.12,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,

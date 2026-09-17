@@ -174,10 +174,10 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			self.ejectToken += 1
 			self:_predictEject()
 		elseif input.KeyCode == Enum.KeyCode.Q then
-			-- Double split. Server runs _splitPlayer twice.
+			-- Split each eligible cell into 2 total pieces.
 			self.doubleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.E then
-			-- Triple split. Server runs _splitPlayer three times.
+			-- Split each eligible cell into 3 total pieces.
 			self.tripleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.F then
 			-- Freeze toggle (Config.Freeze). Mirror the toggle locally so

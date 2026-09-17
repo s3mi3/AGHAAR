@@ -67,6 +67,25 @@ local function massToRadius(mass: number): number
 	return math.sqrt(math.max(mass, 1)) * Config.Cell.RadiusScale
 end
 
+local function rotateDirection(direction: Vector2, angle: number): Vector2
+	if math.abs(angle) <= 0.000001 then
+		return direction
+	end
+	local cos = math.cos(angle)
+	local sin = math.sin(angle)
+	return Vec2.safeUnit(Vector2.new(
+		direction.X * cos - direction.Y * sin,
+		direction.X * sin + direction.Y * cos
+	), direction)
+end
+
+local function splitAimForState(state): Vector2
+	if state.input.target and state.center then
+		return Vec2.safeUnit(state.input.target - state.center, state.input.aim)
+	end
+	return Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
+end
+
 -- Mass-scaled merge cooldown. Formula per Config.Cell comments:
 --   clamp(RecombineMinSeconds + (mass / RecombineScaleMass) * RecombinePerScaleMass,
 --         RecombineMinSeconds, RecombineMaxSeconds)
@@ -2777,49 +2796,55 @@ end
 
 function GameService:_splitPlayer(state)
 	local cells = self:_sortedPlayerCells(state)
-
 	local splitsLeft = math.min(Config.Cell.MaxSplitPiecesPerCommand, Config.Player.MaxCells - #state.cells)
+	local eligible = {}
 	for _, cell in cells do
-		if splitsLeft <= 0 then
+		if #eligible >= splitsLeft then
 			break
 		end
 		if cell.mass >= Config.Cell.SplitMinMass * 2 then
-			local dir = self:_cellAimDirection(state, cell)
-			local childMass = cell.mass * 0.5
-			self:_setCellMass(cell, childMass)
-			cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
-			cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
-			local childRadius = massToRadius(childMass)
-			-- If frozen, spawn the child with zero velocity but nudge it
-			-- a short distance along aim so the group has a direction
-			-- (not stacked on one point). Cells still stay bunched close.
-			-- Non-frozen: normal outward launch.
-			local childVelocity = if state.frozen
-				then Vector2.zero
-				else dir * self:_splitImpulseForMass(cell.mass)
-			local spawnPos
-			if state.frozen then
-				local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-				spawnPos = cell.pos + dir * (childRadius * 0.6 + nudge)
-				spawnPos = self:_clampToWorld(spawnPos, childRadius)
-			else
-				spawnPos = self:_adjustSpawnPositionForBarriers(
-					cell.pos,
-					cell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
-					childRadius
-				)
-			end
-			local child = self:_spawnPlayerCell(
-				state,
-				spawnPos,
-				childMass,
-				childVelocity,
-				true
+			eligible[#eligible + 1] = cell
+		end
+	end
+
+	local baseAim = splitAimForState(state)
+	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
+	for index, cell in eligible do
+		local laneRatio = if #eligible > 1 then (index - 1) / (#eligible - 1) - 0.5 else 0
+		local dir = rotateDirection(baseAim, laneRatio * groupSpread)
+		local childMass = cell.mass * 0.5
+		self:_setCellMass(cell, childMass)
+		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
+		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+		local childRadius = massToRadius(childMass)
+		-- If frozen, spawn the child with zero velocity but nudge it
+		-- a short distance along aim so the group has a direction
+		-- (not stacked on one point). Cells still stay bunched close.
+		-- Non-frozen: normal outward launch.
+		local childVelocity = if state.frozen
+			then Vector2.zero
+			else dir * self:_splitImpulseForMass(cell.mass)
+		local spawnPos
+		if state.frozen then
+			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
+			spawnPos = cell.pos + dir * (childRadius * 0.6 + nudge)
+			spawnPos = self:_clampToWorld(spawnPos, childRadius)
+		else
+			spawnPos = self:_adjustSpawnPositionForBarriers(
+				cell.pos,
+				cell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
+				childRadius
 			)
-			if child then
-				child.sweptEatStartPos = cell.pos
-			end
-			splitsLeft -= 1
+		end
+		local child = self:_spawnPlayerCell(
+			state,
+			spawnPos,
+			childMass,
+			childVelocity,
+			true
+		)
+		if child then
+			child.sweptEatStartPos = cell.pos
 		end
 	end
 end
@@ -2836,7 +2861,9 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		return
 	end
 
-	for _, cell in cells do
+	local baseAim = splitAimForState(state)
+	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
+	for cellIndex, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
 		if freeSlots <= 0 then
 			break
@@ -2855,8 +2882,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local originalMass = cell.mass
-		local aim = self:_cellAimDirection(state, cell)
+		local laneRatio = if #cells > 1 then (cellIndex - 1) / (#cells - 1) - 0.5 else 0
+		local aim = rotateDirection(baseAim, laneRatio * groupSpread)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -2867,14 +2894,9 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local fanIndex = i - (newChildren + 1) * 0.5
 			local perChild = if newChildren > 1 then fanSpread / (newChildren - 1) else 0
 			local fanAngle = fanIndex * perChild
-			local cos = math.cos(fanAngle)
-			local sin = math.sin(fanAngle)
-			local dir = Vec2.safeUnit(Vector2.new(
-				aim.X * cos - aim.Y * sin,
-				aim.X * sin + aim.Y * cos
-			), aim)
+			local dir = rotateDirection(aim, fanAngle)
 
-			local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.3)
+			local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.18)
 			local staggerOffset = (i - 1) * staggerStep
 			local childVelocity
 			local spawnPos
@@ -2884,7 +2906,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 				spawnPos = cell.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
 				spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
 			else
-				childVelocity = dir * self:_splitImpulseForMass(originalMass)
+				childVelocity = dir * self:_splitImpulseForMass(pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
 					cell.pos,
 					cell.pos + dir * (
@@ -2931,8 +2953,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 	local newChildren = pieces - 1
 	local pieceMass = biggest.mass / pieces
 	local pieceRadius = massToRadius(pieceMass)
-	local originalMass = biggest.mass
-	local aim = self:_cellAimDirection(state, biggest)
+	local aim = splitAimForState(state)
 
 	self:_setCellMass(biggest, pieceMass)
 	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
@@ -2946,18 +2967,13 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		local fanIndex = i - (newChildren + 1) * 0.5
 		local perChild = if newChildren > 1 then fanSpread / (newChildren - 1) else 0
 		local fanAngle = fanIndex * perChild
-		local cos = math.cos(fanAngle)
-		local sin = math.sin(fanAngle)
-		local dir = Vec2.safeUnit(Vector2.new(
-			aim.X * cos - aim.Y * sin,
-			aim.X * sin + aim.Y * cos
-		), aim)
+		local dir = rotateDirection(aim, fanAngle)
 
 		local childVelocity
 		local spawnPos
 		-- Stagger children along aim so a straight-line (fan~=0) split
 		-- doesn't spawn every child on the exact same pixel.
-		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.3)
+		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.18)
 		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
@@ -2965,7 +2981,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 			spawnPos = biggest.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
 			spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
 		else
-			childVelocity = dir * self:_splitImpulseForMass(originalMass)
+			childVelocity = dir * self:_splitImpulseForMass(pieceMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				biggest.pos,
 				biggest.pos + dir * (

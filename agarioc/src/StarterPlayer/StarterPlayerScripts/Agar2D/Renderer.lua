@@ -1627,10 +1627,6 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	local startedAt = state.spawnAnimationStartedAt or (untilTime - (Config.Render.SplitSpawnAnimationSeconds or 0.52))
 	local duration = math.max(Config.Render.SplitSpawnAnimationSeconds or (untilTime - startedAt), 0.001)
 	local elapsed = math.max(now - startedAt, 0)
-	local source = state.spawnAnimationSource
-	if source and source.confirmed == true and source.displayPos then
-		origin = source.displayPos
-	end
 
 	local targetLead = math.clamp(
 		now - (state.receivedAt or now),
@@ -1643,19 +1639,12 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	state.spawnAnimationTargetPos = smoothTarget
 
 	local initialOffset = state.spawnAnimationOffset or (origin - smoothTarget)
-	local liveOffset = origin - smoothTarget
-	if liveOffset:Dot(liveOffset) > initialOffset:Dot(initialOffset) then
-		liveOffset = initialOffset
-	end
-	local sourceFollowSeconds = math.max(Config.Render.SplitSpawnAnimationSourceFollowSeconds or 0.12, 0.001)
-	local sourceAlpha = math.exp(-elapsed / sourceFollowSeconds)
-	local launchOffset = initialOffset:Lerp(liveOffset, sourceAlpha)
 	-- Smoothstep gives the launch zero acceleration jumps at both ends.
 	-- The previous exponential decay moved most of the distance immediately,
 	-- which made split children look like they snapped out of the parent.
 	local progress = math.clamp(elapsed / duration, 0, 1)
 	local easedProgress = progress * progress * (3 - 2 * progress)
-	local visualOffset = launchOffset * (1 - easedProgress)
+	local visualOffset = initialOffset * (1 - easedProgress)
 	local startRadius = state.spawnAnimationStartRadius or targetRadius
 	state.radius = startRadius + (targetRadius - startRadius) * easedProgress
 	local desiredPos = self:_resolveCircleAgainstBarriers(smoothTarget + visualOffset, state.radius)
@@ -1664,8 +1653,9 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 
 	local endDistance = math.max(Config.Render.SplitSpawnAnimationEndDistance or 2, 0)
 	local remainingDistance = (state.displayPos - desiredPos).Magnitude
+	local maxOverrun = math.max(Config.Render.SplitSpawnAnimationMaxOverrunSeconds or 0.12, 0)
 	if (elapsed >= duration and visualOffset.Magnitude <= endDistance and remainingDistance <= math.max(endDistance, 2))
-		or elapsed >= duration * 1.65
+		or elapsed >= duration + maxOverrun
 	then
 		state.spawnAnimatingUntil = nil
 		state.spawnAnimationStartedAt = nil

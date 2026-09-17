@@ -14,6 +14,7 @@ SOURCES = {
     "Config": ROOT / "src/ReplicatedStorage/Agar2D/Shared/Config.lua",
     "GameService": ROOT / "src/ServerScriptService/Agar2D/GameService.lua",
     "Camera2D": ROOT / "src/StarterPlayer/StarterPlayerScripts/Agar2D/Camera2D.lua",
+    "InputController": ROOT / "src/StarterPlayer/StarterPlayerScripts/Agar2D/InputController.lua",
     "Renderer": ROOT / "src/StarterPlayer/StarterPlayerScripts/Agar2D/Renderer.lua",
 }
 
