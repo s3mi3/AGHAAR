@@ -90,7 +90,7 @@ Config.Cell = {
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
 	FrozenSplitNudgeRadiusScale = 0.55,
-	FrozenSplitHeldBoostScale = 0.4,
+	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -332,8 +332,8 @@ Config.Ejected = {
 	SelfRecoveryEndScore = 2400000,
 	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 450,
-	DragPerSecond = 0.85,
+	Speed = 410,
+	DragPerSecond = 1.15,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -368,7 +368,7 @@ Config.Ejected = {
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
 	SelfFeedCenterRadius = 180,
-	SelfFeedVisualPellets = 3,
+	SelfFeedVisualPellets = 2,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet

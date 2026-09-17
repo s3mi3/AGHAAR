@@ -1318,7 +1318,12 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			if kind == "ejected" and extra and extra.velocity then
 				state.velocity = extra.velocity
 			end
-			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
+			if kind == "cell"
+				and extra
+				and extra.isOwn
+				and state.splitVisualBoost
+				and not self.localFrozen
+			then
 				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale
 				local observedBoost = state.velocity - baseVelocity
