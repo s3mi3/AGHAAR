@@ -308,7 +308,24 @@ local function canCollectEjected(collector, ejected): boolean
 	end
 
 	local collectDistance = ejectedTouchPickupDistance(collector, ejected)
-	return Vec2.distanceSquared(collector.pos, ejected.pos) <= collectDistance * collectDistance
+	if collectDistance <= 0 then
+		return false
+	end
+	if Vec2.distanceSquared(collector.pos, ejected.pos) <= collectDistance * collectDistance then
+		return true
+	end
+	local previousPos = ejected.previousPos
+	if not previousPos then
+		return false
+	end
+	local travel = ejected.pos - previousPos
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared <= 0.000001 then
+		return false
+	end
+	local t = math.clamp((collector.pos - previousPos):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previousPos + travel * t
+	return Vec2.distanceSquared(collector.pos, closest) <= collectDistance * collectDistance
 end
 
 local function canCellFireEjected(cell): boolean
@@ -3304,6 +3321,7 @@ function GameService:_moveEjected(dt: number)
 	end
 
 	for id, ejected in self.ejected do
+		ejected.previousPos = ejected.pos
 		local nextPos = ejected.pos + ejected.vel * dt
 		local worldMin, worldMax = self:_worldBounds()
 		local minX = worldMin.X + ejected.radius
@@ -4017,7 +4035,13 @@ function GameService:_queueEatEventsForCell(cell, events)
 		end
 	end
 
-	local ejectedQueryRadius = cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+	-- Include one maximum pellet step so a small, fast pellet cannot cross
+	-- entirely through a cell between simulation ticks.
+	local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
+	local ejectedQueryRadius = cell.radius
+		+ Config.Ejected.Radius
+		+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+		+ ejectedStepDistance
 	local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in ejectedCandidates do
 		local ejected = self.ejected[id]

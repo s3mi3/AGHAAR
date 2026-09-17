@@ -3216,6 +3216,26 @@ local function zIndexForRadius(radius: number): number
 	return 3 + math.clamp(math.floor(radius / 24 + 0.5), 0, 14)
 end
 
+local function movingPointTouchesCircle(state, center: Vector2, radius: number): boolean
+	local current = state.displayPos
+	if (current - center):Dot(current - center) &lt;= radius * radius then
+		return true
+	end
+	local previous = state.previousDisplayPos
+	if not previous then
+		return false
+	end
+	local travel = current - previous
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared &lt;= 0.000001 then
+		return false
+	end
+	local t = math.clamp((center - previous):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previous + travel * t
+	local delta = closest - center
+	return delta:Dot(delta) &lt;= radius * radius
+end
+
 local function serverTimeNow(): number
 	local ok, value = pcall(function()
 		return workspace:GetServerTimeNow()
@@ -3807,6 +3827,24 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id &lt; b.id
 	end)
 
+	-- Match the server's receiver selection: the cell nearest the cursor
+	-- receives pellets and does not also emit a visual-only pellet.
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" and #eligible &gt; 1 then
+		local targetIndex = nil
+		local bestDistanceSquared = math.huge
+		for index, entry in eligible do
+			local delta = target - entry.state.displayPos
+			local distanceSquared = delta:Dot(delta)
+			if distanceSquared &lt; bestDistanceSquared then
+				bestDistanceSquared = distanceSquared
+				targetIndex = index
+			end
+		end
+		if targetIndex then
+			table.remove(eligible, targetIndex)
+		end
+	end
+
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
@@ -3855,6 +3893,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			receivedAt = now,
 			extrapolate = true,
 			predicted = true,
+			sourceCell = cell,
 			worldPadding = Config.Ejected.Radius,
 			consumeAfter = now + math.max(Config.Ejected.OwnerReeatDelay or 0, Config.Ejected.LocalVisualMinVisibleSeconds or 0),
 			expiresAt = now + (Config.Ejected.LocalVisualLifeSeconds or 0.8),
@@ -4701,7 +4740,10 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 
 	for _, cellState in self.cellStates do
 		if cellState.mass and cellState.mass &gt;= (Config.Ejected.EatMinCellMass or 18) then
-			if not cellState.isOwn or now &gt;= (state.consumeAfter or 0) then
+			local waitingForSource = cellState.isOwn
+				and cellState == state.sourceCell
+				and now &lt; (state.consumeAfter or 0)
+			if not waitingForSource then
 				-- Own cells consume pellets by center-in-disc (matches
 				-- the server rule in ejectedTouchPickupDistance).
 				-- Enemies still use edge-to-edge touch.
@@ -4711,8 +4753,7 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 					local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 					local pelletRadius = state.radius or Config.Ejected.Radius
 					local touchDistance = math.max(targetRadius - pelletRadius * coverage + padding, 0)
-					local delta = state.displayPos - cellState.displayPos
-					if delta:Dot(delta) &lt;= touchDistance * touchDistance then
+					if movingPointTouchesCircle(state, cellState.displayPos, touchDistance) then
 						return true
 					end
 				elseif self:_predictedEjectedTouchesCircle(state, cellState, 0) then
@@ -4727,6 +4768,7 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
+	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)
 	if clamped.X ~= nextPos.X then
@@ -5211,12 +5253,13 @@ end
 
 function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: number, padding: number?): boolean
 	local pickupRadius = state.radius or state.targetRadius or 0
+	local now = os.clock()
 	for _, cell in candidates do
-		if cell.mass &gt;= minMass then
+		local waitingForSource = cell == state.sourceCell and now &lt; (state.consumeAfter or 0)
+		if cell.mass &gt;= minMass and not waitingForSource then
 			local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 			local touchDistance = math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
-			local delta = cell.displayPos - state.displayPos
-			if delta:Dot(delta) &lt;= touchDistance * touchDistance then
+			if movingPointTouchesCircle(state, cell.displayPos, touchDistance) then
 				return true
 			end
 		end
@@ -5300,10 +5343,8 @@ function Renderer:render(dt: number?)
 	self.cellPool:begin()
 
 	self:_drawSimpleStates(self.foodPool, 100000000, self.foodStates, Config.Render.FoodColor, nil, Config.Render.FoodZIndex or 3)
-	local now = os.clock()
 	self:_drawSimpleStates(self.ejectedPool, 200000000, self.ejectedStates, Config.Render.EjectedColor, function(state)
 		return state.predicted == true
-			and now &gt;= (state.consumeAfter or 0)
 			and self:_ownCellCanTouchPickupFromList(
 				ownEatCandidates,
 				state,
@@ -7007,10 +7048,10 @@ Config.Ejected = {
 	LifeSeconds = 30, -- was 10; ejected pellets stick around longer
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
-	OwnerReeatDelay = 0.4, -- was 0.15; source cell has to wait a bit before grabbing its own pellet, so it actually reaches sibling cells
+	OwnerReeatDelay = 0.1,
 	LocalVisualMaxCellsPerShotTick = 16,
 	LocalVisualLifeSeconds = 1.25,
-	LocalVisualMinVisibleSeconds = 0.45,
+	LocalVisualMinVisibleSeconds = 0.08,
 	OwnerTrimRetainRadius = 1800,
 	MaxCount = 3000,
 	PerPlayerMaxCount = 384,
@@ -7032,7 +7073,7 @@ Config.Ejected = {
 	-- path. Enemies can still eat them normally, and after the pellet
 	-- has lived past LockedTargetTimeout seconds the lock releases
 	-- (so misses don't produce eternally-uneatable pellets).
-	LockPelletsToTarget = true,
+	LockPelletsToTarget = false,
 	LockedTargetTimeout = 3.0,
 }
 
@@ -8494,7 +8535,24 @@ local function canCollectEjected(collector, ejected): boolean
 	end
 
 	local collectDistance = ejectedTouchPickupDistance(collector, ejected)
-	return Vec2.distanceSquared(collector.pos, ejected.pos) &lt;= collectDistance * collectDistance
+	if collectDistance &lt;= 0 then
+		return false
+	end
+	if Vec2.distanceSquared(collector.pos, ejected.pos) &lt;= collectDistance * collectDistance then
+		return true
+	end
+	local previousPos = ejected.previousPos
+	if not previousPos then
+		return false
+	end
+	local travel = ejected.pos - previousPos
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared &lt;= 0.000001 then
+		return false
+	end
+	local t = math.clamp((collector.pos - previousPos):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previousPos + travel * t
+	return Vec2.distanceSquared(collector.pos, closest) &lt;= collectDistance * collectDistance
 end
 
 local function canCellFireEjected(cell): boolean
@@ -11490,6 +11548,7 @@ function GameService:_moveEjected(dt: number)
 	end
 
 	for id, ejected in self.ejected do
+		ejected.previousPos = ejected.pos
 		local nextPos = ejected.pos + ejected.vel * dt
 		local worldMin, worldMax = self:_worldBounds()
 		local minX = worldMin.X + ejected.radius
@@ -12203,7 +12262,13 @@ function GameService:_queueEatEventsForCell(cell, events)
 		end
 	end
 
-	local ejectedQueryRadius = cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+	-- Include one maximum pellet step so a small, fast pellet cannot cross
+	-- entirely through a cell between simulation ticks.
+	local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
+	local ejectedQueryRadius = cell.radius
+		+ Config.Ejected.Radius
+		+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+		+ ejectedStepDistance
 	local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in ejectedCandidates do
 		local ejected = self.ejected[id]

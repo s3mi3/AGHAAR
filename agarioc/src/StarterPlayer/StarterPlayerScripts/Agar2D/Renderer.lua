@@ -102,6 +102,26 @@ local function zIndexForRadius(radius: number): number
 	return 3 + math.clamp(math.floor(radius / 24 + 0.5), 0, 14)
 end
 
+local function movingPointTouchesCircle(state, center: Vector2, radius: number): boolean
+	local current = state.displayPos
+	if (current - center):Dot(current - center) <= radius * radius then
+		return true
+	end
+	local previous = state.previousDisplayPos
+	if not previous then
+		return false
+	end
+	local travel = current - previous
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared <= 0.000001 then
+		return false
+	end
+	local t = math.clamp((center - previous):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previous + travel * t
+	local delta = closest - center
+	return delta:Dot(delta) <= radius * radius
+end
+
 local function serverTimeNow(): number
 	local ok, value = pcall(function()
 		return workspace:GetServerTimeNow()
@@ -693,6 +713,24 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id < b.id
 	end)
 
+	-- Match the server's receiver selection: the cell nearest the cursor
+	-- receives pellets and does not also emit a visual-only pellet.
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" and #eligible > 1 then
+		local targetIndex = nil
+		local bestDistanceSquared = math.huge
+		for index, entry in eligible do
+			local delta = target - entry.state.displayPos
+			local distanceSquared = delta:Dot(delta)
+			if distanceSquared < bestDistanceSquared then
+				bestDistanceSquared = distanceSquared
+				targetIndex = index
+			end
+		end
+		if targetIndex then
+			table.remove(eligible, targetIndex)
+		end
+	end
+
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
@@ -741,6 +779,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			receivedAt = now,
 			extrapolate = true,
 			predicted = true,
+			sourceCell = cell,
 			worldPadding = Config.Ejected.Radius,
 			consumeAfter = now + math.max(Config.Ejected.OwnerReeatDelay or 0, Config.Ejected.LocalVisualMinVisibleSeconds or 0),
 			expiresAt = now + (Config.Ejected.LocalVisualLifeSeconds or 0.8),
@@ -1587,7 +1626,10 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 
 	for _, cellState in self.cellStates do
 		if cellState.mass and cellState.mass >= (Config.Ejected.EatMinCellMass or 18) then
-			if not cellState.isOwn or now >= (state.consumeAfter or 0) then
+			local waitingForSource = cellState.isOwn
+				and cellState == state.sourceCell
+				and now < (state.consumeAfter or 0)
+			if not waitingForSource then
 				-- Own cells consume pellets by center-in-disc (matches
 				-- the server rule in ejectedTouchPickupDistance).
 				-- Enemies still use edge-to-edge touch.
@@ -1597,8 +1639,7 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 					local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 					local pelletRadius = state.radius or Config.Ejected.Radius
 					local touchDistance = math.max(targetRadius - pelletRadius * coverage + padding, 0)
-					local delta = state.displayPos - cellState.displayPos
-					if delta:Dot(delta) <= touchDistance * touchDistance then
+					if movingPointTouchesCircle(state, cellState.displayPos, touchDistance) then
 						return true
 					end
 				elseif self:_predictedEjectedTouchesCircle(state, cellState, 0) then
@@ -1613,6 +1654,7 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
+	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)
 	if clamped.X ~= nextPos.X then
@@ -2097,12 +2139,13 @@ end
 
 function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: number, padding: number?): boolean
 	local pickupRadius = state.radius or state.targetRadius or 0
+	local now = os.clock()
 	for _, cell in candidates do
-		if cell.mass >= minMass then
+		local waitingForSource = cell == state.sourceCell and now < (state.consumeAfter or 0)
+		if cell.mass >= minMass and not waitingForSource then
 			local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 			local touchDistance = math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
-			local delta = cell.displayPos - state.displayPos
-			if delta:Dot(delta) <= touchDistance * touchDistance then
+			if movingPointTouchesCircle(state, cell.displayPos, touchDistance) then
 				return true
 			end
 		end
@@ -2186,10 +2229,8 @@ function Renderer:render(dt: number?)
 	self.cellPool:begin()
 
 	self:_drawSimpleStates(self.foodPool, 100000000, self.foodStates, Config.Render.FoodColor, nil, Config.Render.FoodZIndex or 3)
-	local now = os.clock()
 	self:_drawSimpleStates(self.ejectedPool, 200000000, self.ejectedStates, Config.Render.EjectedColor, function(state)
 		return state.predicted == true
-			and now >= (state.consumeAfter or 0)
 			and self:_ownCellCanTouchPickupFromList(
 				ownEatCandidates,
 				state,

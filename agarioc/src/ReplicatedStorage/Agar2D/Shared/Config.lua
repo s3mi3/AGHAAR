@@ -345,10 +345,10 @@ Config.Ejected = {
 	LifeSeconds = 30, -- was 10; ejected pellets stick around longer
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
-	OwnerReeatDelay = 0.4, -- was 0.15; source cell has to wait a bit before grabbing its own pellet, so it actually reaches sibling cells
+	OwnerReeatDelay = 0.1,
 	LocalVisualMaxCellsPerShotTick = 16,
 	LocalVisualLifeSeconds = 1.25,
-	LocalVisualMinVisibleSeconds = 0.45,
+	LocalVisualMinVisibleSeconds = 0.08,
 	OwnerTrimRetainRadius = 1800,
 	MaxCount = 3000,
 	PerPlayerMaxCount = 384,
@@ -370,7 +370,7 @@ Config.Ejected = {
 	-- path. Enemies can still eat them normally, and after the pellet
 	-- has lived past LockedTargetTimeout seconds the lock releases
 	-- (so misses don't produce eternally-uneatable pellets).
-	LockPelletsToTarget = true,
+	LockPelletsToTarget = false,
 	LockedTargetTimeout = 3.0,
 }
 
