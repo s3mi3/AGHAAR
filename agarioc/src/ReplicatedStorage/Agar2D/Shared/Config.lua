@@ -334,7 +334,6 @@ Config.Ejected = {
 	SelfRecoveryCurveExponent = 0.7,
 	Speed = 380,
 	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
-	TargetHomingSharpness = 12,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -360,7 +359,7 @@ Config.Ejected = {
 	MaxCellsPerShotTick = 32,
 	LoadMaxCellsPerShotTick = 32,
 	HeavyLoadMaxCellsPerShotTick = 32,
-	FireHz = 15,
+	FireHz = 17,
 	MaxEjectsPerStep = 6,
 	ConeDegrees = 0, -- zero spread; pellet flies exactly at cursor
 	-- Feeding a small cell inside a cluster: the owned cell nearest
@@ -484,13 +483,13 @@ Config.Render = {
 	-- The launch follows its authoritative target immediately; smoothstep
 	-- controls the visual offset and radius growth without holding the child
 	-- on its parent.
-	SplitSpawnAnimationSeconds = 0.5,
+	SplitSpawnAnimationSeconds = 0.38,
 	SplitSpawnAnimationStartRadiusScale = 0.72,
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 24,
 	SplitSpawnAnimationTargetSharpness = 20,
 	SplitSpawnAnimationTargetLeadSeconds = 0.14,
-	SplitSpawnAnimationMaxOverrunSeconds = 0.12,
+	SplitSpawnAnimationMaxOverrunSeconds = 0.08,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,

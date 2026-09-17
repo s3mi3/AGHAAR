@@ -783,6 +783,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		)
 		local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
 		local pos = self:_clampToWorld(cell.displayPos + dir * spawnDistance, Config.Ejected.Radius)
+		local inheritedVelocity = Vector2.zero
+		if not self.localFrozen then
+			local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, cell.displayPos, cell.radius)
+			inheritedVelocity = moveDir * speedForMass(cell.mass) * moveScale
+				+ (cell.splitVisualBoost or Vector2.zero)
+		end
 		local id = self.nextPredictedEjectedId
 		self.nextPredictedEjectedId -= 1
 		if self.nextPredictedEjectedId < -1000000 then
@@ -792,7 +798,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		self.ejectedStates[id] = {
 			displayPos = pos,
 			targetPos = pos,
-			velocity = shotDir * Config.Ejected.Speed,
+			velocity = shotDir * Config.Ejected.Speed + inheritedVelocity,
 			radius = Config.Ejected.Radius,
 			targetRadius = Config.Ejected.Radius,
 			color = cell.color or Config.Render.EjectedColor,
@@ -1172,7 +1178,7 @@ function Renderer:handleShopMessage(payload)
 	end
 end
 
-function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra)
+function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra, serial: number)
 	local renderConfig = Config.Render
 	if renderConfig.SplitSpawnAnimationEnabled == false or typeof(extra) ~= "table" then
 		return nil
@@ -1191,10 +1197,12 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 	local bestOrigin = nil
 	local bestSource = nil
 	local bestDistanceSquared = math.huge
+	local bestIsMassDropSource = false
 	for otherId, state in self.cellStates do
+		local isMassDropSource = state.lastMassDropSerial == serial
 		if otherId ~= id
 			and state.confirmed == true
-			and not isSplitSpawnAnimating(state)
+			and (not isSplitSpawnAnimating(state) or isMassDropSource)
 			and state.extra
 			and state.extra.ownerUserId == ownerUserId
 		then
@@ -1202,10 +1210,16 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 			if origin then
 				local delta = pos - origin
 				local distanceSquared = delta:Dot(delta)
-				if distanceSquared <= maxDistanceSquared and distanceSquared < bestDistanceSquared then
+				if distanceSquared <= maxDistanceSquared
+					and (
+						(isMassDropSource and not bestIsMassDropSource)
+						or (isMassDropSource == bestIsMassDropSource and distanceSquared < bestDistanceSquared)
+					)
+				then
 					bestDistanceSquared = distanceSquared
 					bestOrigin = origin
 					bestSource = state
+					bestIsMassDropSource = isMassDropSource
 				end
 			end
 		end
@@ -1224,7 +1238,7 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local splitVisualBoost = nil
 		if kind == "cell" then
 			local origin
-			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra)
+			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
 			if origin then
 				displayPos = origin
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
@@ -1262,6 +1276,13 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		}
 		states[id] = state
 	else
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
+			and mass < state.mass * 0.8
+		then
+			state.lastMassDropSerial = serial
+		end
 		if isStatic then
 			local tolerance = Config.Render.StaticPositionTolerance or 2
 			local staticPos = state.staticPos or state.targetPos
@@ -1702,19 +1723,6 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
-	local targetCell = state.targetCell
-	if targetCell and targetCell.confirmed and targetCell.displayPos then
-		local toTarget = targetCell.displayPos - state.displayPos
-		local speed = velocity.Magnitude
-		if speed > 0.001 and toTarget.Magnitude > 0.001 then
-			local turnAlpha = 1 - math.exp(-math.max(Config.Ejected.TargetHomingSharpness or 0, 0) * dt)
-			local blendedDirection = velocity.Unit:Lerp(toTarget.Unit, turnAlpha)
-			local direction = if blendedDirection.Magnitude > 0.001
-				then blendedDirection.Unit
-				else toTarget.Unit
-			velocity = direction * speed
-		end
-	end
 	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)

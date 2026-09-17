@@ -1768,7 +1768,8 @@ function GameService:_spawnEjected(
 	ownerUserId: number,
 	sourceCellId: number?,
 	targetCellId: number?,
-	pickupMultiplier: number?
+	pickupMultiplier: number?,
+	inheritedVelocity: Vector2?
 )
 	self:_trimOwnerEjected(ownerUserId)
 	if self.ejectedCount >= Config.Ejected.MaxCount then
@@ -1792,7 +1793,7 @@ function GameService:_spawnEjected(
 		targetCellId = targetCellId,
 		colorPayload = owner and owner.colorPayload or colorToPayload(Config.Render.EjectedColor),
 		pos = self:_clampToWorld(pos, Config.Ejected.Radius),
-		vel = dir * Config.Ejected.Speed,
+		vel = dir * Config.Ejected.Speed + (inheritedVelocity or Vector2.zero),
 		mass = Config.Ejected.Mass,
 		pickupMultiplier = math.max(pickupMultiplier or 1, 1),
 		radius = Config.Ejected.Radius,
@@ -3133,6 +3134,14 @@ function GameService:_ejectMassFromCells(state, cells)
 			elseif cost > 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
+			local inheritedVelocity = Vector2.zero
+			if not state.frozen then
+				local moveDir, moveScale = self:_cellMoveVector(state, cell)
+				local moveSpeed = Config.Player.BaseSpeed
+					* (Config.Player.InitialMass / math.max(cell.mass, 1)) ^ Config.Player.SpeedExponent
+				moveSpeed = math.clamp(moveSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+				inheritedVelocity = moveDir * moveSpeed * moveScale + (cell.boost or Vector2.zero)
+			end
 			local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
 			self:_spawnEjected(
 				cell.pos + aim * spawnDistance,
@@ -3140,7 +3149,8 @@ function GameService:_ejectMassFromCells(state, cells)
 				state.userId,
 				cell.id,
 				targetCellId,
-				pickupMultiplier
+				pickupMultiplier,
+				inheritedVelocity
 			)
 			firedAny = true
 		end
@@ -3307,15 +3317,7 @@ function GameService:_moveEjected(dt: number)
 	for id, ejected in self.ejected do
 		ejected.previousPos = ejected.pos
 		local targetCell = ejected.targetCellId and self.cells[ejected.targetCellId] or nil
-		if targetCell and targetCell.ownerUserId == ejected.ownerUserId then
-			local toTarget = targetCell.pos - ejected.pos
-			local speed = ejected.vel.Magnitude
-			if speed > 0.001 and toTarget.Magnitude > 0.001 then
-				local turnAlpha = 1 - math.exp(-math.max(Config.Ejected.TargetHomingSharpness or 0, 0) * dt)
-				local direction = Vec2.safeUnit(ejected.vel.Unit:Lerp(toTarget.Unit, turnAlpha), toTarget.Unit)
-				ejected.vel = direction * speed
-			end
-		elseif ejected.targetCellId then
+		if ejected.targetCellId and not targetCell then
 			-- A merged or removed receiver should not leave the pellet
 			-- locked to a cell that no longer exists.
 			ejected.targetCellId = nil
