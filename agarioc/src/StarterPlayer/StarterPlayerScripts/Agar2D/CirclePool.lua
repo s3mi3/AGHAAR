@@ -27,6 +27,30 @@ local function setCached(parts, key: string, instance: Instance, property: strin
 	instance[property] = value
 end
 
+local function ensureSerrations(frame: Frame, parts)
+	if parts.serrations then
+		return
+	end
+
+	parts.serrations = {}
+	for index = 1, 16 do
+		local angle = (index - 1) * (math.pi * 2 / 16)
+		local tooth = Instance.new("Frame")
+		tooth.Name = "Serration"
+		tooth.AnchorPoint = Vector2.new(0.5, 0.5)
+		tooth.BorderSizePixel = 0
+		tooth.Position = UDim2.fromScale(
+			0.5 + math.cos(angle) * 0.43,
+			0.5 + math.sin(angle) * 0.43
+		)
+		tooth.Rotation = math.deg(angle) + 45
+		tooth.Size = UDim2.fromScale(0.18, 0.18)
+		tooth.Visible = false
+		tooth.Parent = frame
+		parts.serrations[index] = tooth
+	end
+end
+
 local function resetFrame(frame: Frame, parts)
 	parts.cache = {}
 	frame.Visible = false
@@ -67,6 +91,11 @@ local function resetFrame(frame: Frame, parts)
 	if parts.labelStack then
 		parts.labelStack.Visible = false
 	end
+	if parts.serrations then
+		for _, tooth in parts.serrations do
+			tooth.Visible = false
+		end
+	end
 end
 
 local function applyZIndex(frame: Frame, parts, zIndex: number)
@@ -89,6 +118,11 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	end
 	if parts.scoreLabel then
 		parts.scoreLabel.ZIndex = zIndex + 4
+	end
+	if parts.serrations then
+		for _, tooth in parts.serrations do
+			tooth.ZIndex = zIndex + 1
+		end
 	end
 end
 
@@ -234,6 +268,9 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	end
 
 	local parts = self.parts[frame]
+	if options and options.serrated then
+		ensureSerrations(frame, parts)
+	end
 	local zIndex = options and options.zIndex or self.zIndex
 	applyZIndex(frame, parts, zIndex)
 	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
@@ -251,6 +288,15 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	end
 	if parts.frameCorner then
 		setCached(parts, "frameCorner", parts.frameCorner, "CornerRadius", options and options.cornerRadius or UDim.new(1, 0))
+	end
+	if parts.serrations then
+		local serrated = options and options.serrated == true
+		for index, tooth in parts.serrations do
+			setCached(parts, "serrationVisible" .. index, tooth, "Visible", serrated)
+			if serrated then
+				setCached(parts, "serrationColor" .. index, tooth, "BackgroundColor3", color)
+			end
+		end
 	end
 
 	if options then

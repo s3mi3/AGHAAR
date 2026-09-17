@@ -581,10 +581,9 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		lastLevelFill = nil,
 		lastDebugText = nil,
 		virusDrawOptions = {
-			baseImage = Config.Render.VirusImage,
-			baseImageColor = Color3.fromRGB(255, 255, 255),
-			backgroundTransparency = 1,
-			strokeEnabled = false,
+			serrated = true,
+			backgroundTransparency = 0,
+			strokeEnabled = true,
 		},
 		spawnerDrawOptions = {
 			baseImage = Config.Render.SpawnerImage,

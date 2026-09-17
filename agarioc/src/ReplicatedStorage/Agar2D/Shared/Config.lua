@@ -206,11 +206,11 @@ Config.Virus = {
 	-- your cell into pieces. Set to true to restore agar.io behavior.
 	SplitOnEat = false,
 	MaxBurstPieces = 8,
-	BumpVelocityTransfer = 0.85,
-	BumpMinSpeed = 260,
-	BumpMaxSpeed = 520,
-	BumpNudge = 8,
-	DragPerSecond = 1.15,
+	BumpVelocityTransfer = 1,
+	BumpMinSpeed = 300,
+	BumpMaxSpeed = 650,
+	BumpNudge = 10,
+	DragPerSecond = 0.8,
 	WallBounceScale = 0.25,
 	StopSpeed = 10,
 	DynamicSnapshotMinSpeed = 8,
@@ -238,7 +238,7 @@ Config.Spawner = {
 }
 
 Config.Barrier = {
-	TargetCount = 4,
+	TargetCount = 0,
 	Size = Vector2.new(200, 200),
 	Friction = 7,
 	PushTransfer = 0.32,
@@ -514,8 +514,8 @@ Config.Render = {
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
-	VirusColor = Color3.fromRGB(138, 207, 0),
-	VirusImage = "rbxassetid://123525606225594",
+	VirusColor = Color3.fromRGB(82, 196, 26),
+	VirusImage = "",
 	SpawnerColor = Color3.fromRGB(255, 172, 76),
 	SpawnerImage = "rbxassetid://86574435486520",
 	BarrierColor = Color3.fromRGB(96, 108, 124),

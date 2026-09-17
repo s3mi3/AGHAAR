@@ -69,9 +69,9 @@ After editing one of the gameplay source mirrors, run:
 python3 tools/sync_place_sources.py
 ```
 
-This copies the edited Config, GameService, Camera2D, InputController, and
-Renderer modules into `Agar.rbxlx`, which can then be opened and tested in
-Roblox Studio.
+This copies the edited Config, GameService, Camera2D, CirclePool,
+InputController, and Renderer modules into `Agar.rbxlx`, which can then be
+opened and tested in Roblox Studio.
 
 ## Notes / limits
 
