@@ -6630,8 +6630,8 @@ Config.Simulation = {
 
 Config.Player = {
 	MaxCells = 32,
-	SpawnMass = 10000,
-	InitialMass = 10000,
+	SpawnMass = 1000,
+	InitialMass = 1000,
 	MinDecayMass = 140,
 	DecayPerSecond = 0.0004, -- was 0.001; slower shrink so mass sticks around
 	BaseSpeed = 335,
@@ -6661,7 +6661,7 @@ Config.Cell = {
 	-- Formula: clamp(Min + (mass / ScaleMass) * PerScaleMass, Min, Max).
 	RecombineMinSeconds = 1.5, -- floor for very small cells
 	RecombineMaxSeconds = 5, -- cap; even the biggest cells wait at most this long
-	RecombineScaleMass = 10000, -- reference mass; SpawnMass ~= 10000
+	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 1000,
 	SplitImpulse = 850, -- was 600; splits actually spread now
@@ -6843,8 +6843,8 @@ Config.Progression = {
 	LifeXpCap = 25000,
 	XpRate = 0.6,
 	MassExponent = 0.5,
-	BaseStartMass = 10000,
-	MaxStartMass = 43000,
+	BaseStartMass = 1000,
+	MaxStartMass = 1000,
 	StartMassCurveExponent = 1.6,
 	DefaultXpBoostMultiplier = 1,
 	LegacyCoinScaleDivisor = 10,
