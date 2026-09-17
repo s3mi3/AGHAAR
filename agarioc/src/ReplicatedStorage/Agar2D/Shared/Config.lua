@@ -89,7 +89,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0.35,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.18,
+	FrozenSplitNudgeRadiusScale = 0.32,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,

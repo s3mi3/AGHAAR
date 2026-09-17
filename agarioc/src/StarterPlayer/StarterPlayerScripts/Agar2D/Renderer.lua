@@ -2189,7 +2189,13 @@ function Renderer:render(dt: number?)
 		then
 			local screen = self.camera:worldToScreen(state.displayPos)
 			local screenRadius = math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
-			self.virusDrawOptions.zIndex = math.max(zIndexForRadius(state.radius), Config.Render.ObjectMinZIndex or 6)
+			-- Match the cell radius-based layer scale. A cell smaller than
+			-- the virus is painted underneath it, while a cell large enough
+			-- to cover and eat the virus is painted above it.
+			self.virusDrawOptions.zIndex = math.max(
+				math.floor(state.radius),
+				Config.Render.ObjectMinZIndex or 6
+			)
 			self.virusPool:draw(300000000 + id, screen, screenRadius, Config.Render.VirusColor, self.virusDrawOptions)
 		end
 	end

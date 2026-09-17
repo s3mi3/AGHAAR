@@ -121,7 +121,7 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
-			tooth.ZIndex = zIndex + 1
+			tooth.ZIndex = zIndex
 		end
 	end
 end

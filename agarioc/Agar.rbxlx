@@ -2279,7 +2279,7 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
-			tooth.ZIndex = zIndex + 1
+			tooth.ZIndex = zIndex
 		end
 	end
 end
@@ -5303,7 +5303,13 @@ function Renderer:render(dt: number?)
 		then
 			local screen = self.camera:worldToScreen(state.displayPos)
 			local screenRadius = math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
-			self.virusDrawOptions.zIndex = math.max(zIndexForRadius(state.radius), Config.Render.ObjectMinZIndex or 6)
+			-- Match the cell radius-based layer scale. A cell smaller than
+			-- the virus is painted underneath it, while a cell large enough
+			-- to cover and eat the virus is painted above it.
+			self.virusDrawOptions.zIndex = math.max(
+				math.floor(state.radius),
+				Config.Render.ObjectMinZIndex or 6
+			)
 			self.virusPool:draw(300000000 + id, screen, screenRadius, Config.Render.VirusColor, self.virusDrawOptions)
 		end
 	end
@@ -6731,7 +6737,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0.35,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.18,
+	FrozenSplitNudgeRadiusScale = 0.32,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
