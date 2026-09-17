@@ -2682,8 +2682,10 @@ function GameService:_step(dt: number)
 	self:_updateLifeXp(dt)
 	self:_moveEjected(dt)
 	self:_moveViruses(dt)
-	self:_rebuildEjectedGrid()
-	self:_resolveEjectedMassPush()
+	if Config.Ejected.CollisionEnabled ~= false then
+		self:_rebuildEjectedGrid()
+		self:_resolveEjectedMassPush()
+	end
 	self:_decaySpawners(dt)
 	self:_rebuildStaticGridsIfDirty()
 	self:_moveBarriers(dt)

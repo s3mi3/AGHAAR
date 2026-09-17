@@ -2005,7 +2005,6 @@ function Renderer:step(dt: number?)
 	self:_resolveOwnCellVisualSeparation()
 	self:_resolveOwnBarrierPrediction()
 	self:_updatePredictedOwnCenter()
-	self:_removeConsumedPredictedEjected()
 end
 
 function Renderer:_stateIsDrawable(state): boolean
@@ -2053,25 +2052,6 @@ function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: num
 		end
 	end
 	return false
-end
-
-function Renderer:_removeConsumedPredictedEjected()
-	local ownEatCandidates = self:_ownCellEatCandidates()
-	local now = os.clock()
-	for id, state in self.ejectedStates do
-		if state.predicted == true
-			and now >= (state.consumeAfter or 0)
-			and self:_ownCellCanTouchPickupFromList(
-				ownEatCandidates,
-				state,
-				Config.Ejected.EatMinCellMass or 18,
-				Config.Ejected.TouchPickupPadding or 0
-			)
-		then
-			self.ejectedStates[id] = nil
-			self.ejectedPool:release(200000000 + id)
-		end
-	end
 end
 
 function Renderer:_drawSimpleStates(pool, idPrefix: number, states, color: Color3, shouldSuppress, fixedZIndex: number?)
