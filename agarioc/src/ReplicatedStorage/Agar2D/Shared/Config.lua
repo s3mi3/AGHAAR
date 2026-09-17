@@ -100,14 +100,14 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: chain classic splits in one command. Q performs two
-	-- generations (up to 4 pieces), E performs three (up to 8 pieces).
+	-- MULTI-SPLIT: add a fixed number of pieces from the biggest cell.
+	-- E adds 2 children (3 total from one cell); R adds 3 (4 total).
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	DoubleSplitDepth = 2,
-	TripleSplitDepth = 3,
+	DoubleSplitPieces = 4, -- R
+	TripleSplitPieces = 3, -- E
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
@@ -308,10 +308,6 @@ Config.Freeze = {
 	-- resolve against — otherwise they'd sit on top of each other and
 	-- then suddenly pop when the grace ends.
 	UnfreezeJitterDistance = 0.4,
-	-- Frozen split: children spawn stationary but offset a short
-	-- distance along aim so the group has a direction. Small value =
-	-- cells stay bunched tightly; larger value = looser cluster.
-	SplitNudgeDistance = 2,
 }
 
 Config.Input = {
@@ -558,8 +554,8 @@ Config.Tunables = {
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 1.0,  max = 3,     step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
 	{ path = "Cell.MinEatRatio",                 label = "Min Eat Ratio",             type = "number", min = 1,    max = 3,     step = 0.05 },
-	{ path = "Cell.DoubleSplitEnabled",          label = "Q Double-Split Enabled",    type = "bool" },
-	{ path = "Cell.TripleSplitEnabled",          label = "E Triple-Split Enabled",    type = "bool" },
+	{ path = "Cell.DoubleSplitEnabled",          label = "R Four-Cell Split Enabled", type = "bool" },
+	{ path = "Cell.TripleSplitEnabled",          label = "E Three-Cell Split Enabled", type = "bool" },
 
 	-- Player
 	{ path = "Player.MaxCells",                  label = "Max Cells",                 type = "number", min = 1,    max = 64,    step = 1, int = true },
@@ -593,7 +589,6 @@ Config.Tunables = {
 	{ path = "Freeze.UnfreezeGraceSeconds",      label = "Unfreeze Grace (s)",        type = "number", min = 0,    max = 15,    step = 0.1 },
 	{ path = "Freeze.UnfreezeGraceStrength",     label = "Unfreeze Grace Strength",   type = "number", min = 0,    max = 1,     step = 0.01 },
 	{ path = "Freeze.UnfreezeMaxOverlapPerPass", label = "Unfreeze Max Overlap/Pass", type = "number", min = 0,    max = 30,    step = 0.1 },
-	{ path = "Freeze.SplitNudgeDistance",        label = "Freeze-Split Nudge",        type = "number", min = 0,    max = 50,    step = 0.5 },
 	{ path = "Freeze.ReleaseImpulse",             label = "Unfreeze Release Impulse",  type = "number", min = 0,    max = 3000,  step = 20 },
 	{ path = "Freeze.ReleaseImpulseMinScale",     label = "Release Impulse Min Scale", type = "number", min = 0,    max = 1,     step = 0.05 },
 	{ path = "Freeze.ReleaseMinHoldSeconds",      label = "Release Min Hold (s)",      type = "number", min = 0,    max = 5,     step = 0.05 },

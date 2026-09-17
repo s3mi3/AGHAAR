@@ -2700,11 +2700,11 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			self.ejectAccumulator = 0
 			self.ejectToken += 1
 			self:_predictEject()
-		elseif input.KeyCode == Enum.KeyCode.Q then
-			-- Two chained split generations (up to 4 pieces).
+		elseif input.KeyCode == Enum.KeyCode.R then
+			-- Add 3 children from the biggest cell (4 total from one cell).
 			self.doubleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.E then
-			-- Three chained split generations (up to 8 pieces).
+			-- Add 2 children from the biggest cell (3 total from one cell).
 			self.tripleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.F then
 			-- Freeze toggle (Config.Freeze). Mirror the toggle locally so
@@ -6687,14 +6687,14 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: chain classic splits in one command. Q performs two
-	-- generations (up to 4 pieces), E performs three (up to 8 pieces).
+	-- MULTI-SPLIT: add a fixed number of pieces from the biggest cell.
+	-- E adds 2 children (3 total from one cell); R adds 3 (4 total).
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	DoubleSplitDepth = 2,
-	TripleSplitDepth = 3,
+	DoubleSplitPieces = 4, -- R
+	TripleSplitPieces = 3, -- E
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
@@ -6895,10 +6895,6 @@ Config.Freeze = {
 	-- resolve against — otherwise they'd sit on top of each other and
 	-- then suddenly pop when the grace ends.
 	UnfreezeJitterDistance = 0.4,
-	-- Frozen split: children spawn stationary but offset a short
-	-- distance along aim so the group has a direction. Small value =
-	-- cells stay bunched tightly; larger value = looser cluster.
-	SplitNudgeDistance = 2,
 }
 
 Config.Input = {
@@ -7145,8 +7141,8 @@ Config.Tunables = {
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 1.0,  max = 3,     step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
 	{ path = "Cell.MinEatRatio",                 label = "Min Eat Ratio",             type = "number", min = 1,    max = 3,     step = 0.05 },
-	{ path = "Cell.DoubleSplitEnabled",          label = "Q Double-Split Enabled",    type = "bool" },
-	{ path = "Cell.TripleSplitEnabled",          label = "E Triple-Split Enabled",    type = "bool" },
+	{ path = "Cell.DoubleSplitEnabled",          label = "R Four-Cell Split Enabled", type = "bool" },
+	{ path = "Cell.TripleSplitEnabled",          label = "E Three-Cell Split Enabled", type = "bool" },
 
 	-- Player
 	{ path = "Player.MaxCells",                  label = "Max Cells",                 type = "number", min = 1,    max = 64,    step = 1, int = true },
@@ -7180,7 +7176,6 @@ Config.Tunables = {
 	{ path = "Freeze.UnfreezeGraceSeconds",      label = "Unfreeze Grace (s)",        type = "number", min = 0,    max = 15,    step = 0.1 },
 	{ path = "Freeze.UnfreezeGraceStrength",     label = "Unfreeze Grace Strength",   type = "number", min = 0,    max = 1,     step = 0.01 },
 	{ path = "Freeze.UnfreezeMaxOverlapPerPass", label = "Unfreeze Max Overlap/Pass", type = "number", min = 0,    max = 30,    step = 0.1 },
-	{ path = "Freeze.SplitNudgeDistance",        label = "Freeze-Split Nudge",        type = "number", min = 0,    max = 50,    step = 0.5 },
 	{ path = "Freeze.ReleaseImpulse",             label = "Unfreeze Release Impulse",  type = "number", min = 0,    max = 3000,  step = 20 },
 	{ path = "Freeze.ReleaseImpulseMinScale",     label = "Release Impulse Min Scale", type = "number", min = 0,    max = 1,     step = 0.05 },
 	{ path = "Freeze.ReleaseMinHoldSeconds",      label = "Release Min Hold (s)",      type = "number", min = 0,    max = 5,     step = 0.05 },
@@ -10882,22 +10877,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- Double-split (Q): every eligible cell splits into 2 pieces.
-		-- Total cell count doubles each press (1→2→4→8→16→32, capped
-		-- at MaxCells).
+		-- R: split the biggest eligible cell into 4 total pieces.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_chainSplitPlayer(state, Config.Cell.DoubleSplitDepth or 2)
+			self:_multiSplitBiggest(state, Config.Cell.DoubleSplitPieces or 4)
 		end
 
-		-- Triple-split (E): every eligible cell splits into 3 pieces.
-		-- Total cell count triples each press (1→3→9→27, capped at
-		-- MaxCells).
+		-- E: split the biggest eligible cell into 3 total pieces.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_chainSplitPlayer(state, Config.Cell.TripleSplitDepth or 3)
+			self:_multiSplitBiggest(state, Config.Cell.TripleSplitPieces or 3)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner =&gt; cells skip
@@ -10921,16 +10912,6 @@ function GameService:_processCommands()
 					break
 				end
 			end
-		end
-	end
-end
-
-function GameService:_chainSplitPlayer(state, depth: number)
-	for _ = 1, math.max(math.floor(depth), 1) do
-		local beforeCount = #state.cells
-		self:_splitPlayer(state)
-		if #state.cells == beforeCount or #state.cells &gt;= Config.Player.MaxCells then
-			break
 		end
 	end
 end
@@ -10979,9 +10960,7 @@ function GameService:_splitPlayer(state)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-			spawnPos = cell.pos + dir * (childRadius * 0.6 + nudge)
-			spawnPos = self:_clampToWorld(spawnPos, childRadius)
+			spawnPos = self:_clampToWorld(cell.pos, childRadius)
 		else
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
@@ -11055,9 +11034,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local spawnPos
 			if state.frozen then
 				childVelocity = Vector2.zero
-				local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-				spawnPos = cell.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
-				spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
+				spawnPos = self:_clampToWorld(cell.pos, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -11130,9 +11107,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
-			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-			spawnPos = biggest.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
-			spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
+			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
 		else
 			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(

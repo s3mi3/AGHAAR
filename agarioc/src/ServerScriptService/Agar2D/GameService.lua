@@ -2747,22 +2747,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- Double-split (Q): every eligible cell splits into 2 pieces.
-		-- Total cell count doubles each press (1→2→4→8→16→32, capped
-		-- at MaxCells).
+		-- R: split the biggest eligible cell into 4 total pieces.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_chainSplitPlayer(state, Config.Cell.DoubleSplitDepth or 2)
+			self:_multiSplitBiggest(state, Config.Cell.DoubleSplitPieces or 4)
 		end
 
-		-- Triple-split (E): every eligible cell splits into 3 pieces.
-		-- Total cell count triples each press (1→3→9→27, capped at
-		-- MaxCells).
+		-- E: split the biggest eligible cell into 3 total pieces.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_chainSplitPlayer(state, Config.Cell.TripleSplitDepth or 3)
+			self:_multiSplitBiggest(state, Config.Cell.TripleSplitPieces or 3)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner => cells skip
@@ -2786,16 +2782,6 @@ function GameService:_processCommands()
 					break
 				end
 			end
-		end
-	end
-end
-
-function GameService:_chainSplitPlayer(state, depth: number)
-	for _ = 1, math.max(math.floor(depth), 1) do
-		local beforeCount = #state.cells
-		self:_splitPlayer(state)
-		if #state.cells == beforeCount or #state.cells >= Config.Player.MaxCells then
-			break
 		end
 	end
 end
@@ -2844,9 +2830,7 @@ function GameService:_splitPlayer(state)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-			spawnPos = cell.pos + dir * (childRadius * 0.6 + nudge)
-			spawnPos = self:_clampToWorld(spawnPos, childRadius)
+			spawnPos = self:_clampToWorld(cell.pos, childRadius)
 		else
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
@@ -2920,9 +2904,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local spawnPos
 			if state.frozen then
 				childVelocity = Vector2.zero
-				local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-				spawnPos = cell.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
-				spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
+				spawnPos = self:_clampToWorld(cell.pos, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -2995,9 +2977,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
-			local nudge = math.max(Config.Freeze and Config.Freeze.SplitNudgeDistance or 0, 0)
-			spawnPos = biggest.pos + dir * (pieceRadius * 0.6 + nudge + staggerOffset)
-			spawnPos = self:_clampToWorld(spawnPos, pieceRadius)
+			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
 		else
 			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
