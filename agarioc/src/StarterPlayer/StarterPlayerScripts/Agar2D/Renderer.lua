@@ -660,6 +660,15 @@ function Renderer:setLocalFrozen(frozen: boolean)
 	-- instant the freeze releases.
 	if wasFrozen and not self.localFrozen then
 		self.unfreezeGraceStartedAt = os.clock()
+		-- The server clears stored split momentum on release. Mirror that
+		-- immediately instead of replaying a stale predicted boost until
+		-- the next authoritative snapshot arrives.
+		for _, state in self.cellStates do
+			if state.isOwn then
+				state.splitVisualBoost = nil
+				state.velocity = Vector2.zero
+			end
+		end
 	end
 end
 
