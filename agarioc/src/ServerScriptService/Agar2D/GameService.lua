@@ -2928,9 +2928,9 @@ end
 function GameService:_multiSplitBiggest(state, totalPieces: number)
 	-- Splits the biggest eligible cell into `totalPieces` equal pieces
 	-- (parent keeps 1/totalPieces of its mass, and (totalPieces - 1)
-	-- children spawn along aim, fanned slightly). Respects the 32-cell
-	-- cap and the SplitMinMass per-piece minimum. Kept for callers that
-	-- still want single-cell behavior; Q/E now use _splitEveryCellIntoN.
+	-- children spawn along aim, fanned slightly). Each successive child
+	-- inherits the previous child's forward launch, so E/R behave like a
+	-- chained split and extend downrange instead of forming one row.
 	totalPieces = math.max(math.floor(totalPieces), 2)
 	local cells = self:_sortedPlayerCells(state)
 	local biggest = cells[1]
@@ -2959,6 +2959,7 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
 	biggest.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 
+	local chainedBoost = biggest.boost or Vector2.zero
 	for i = 1, newChildren do
 		-- Tight fan across aim so children fly nearly straight. Config
 		-- knob Cell.MultiSplitFanRadians controls the total spread; 0
@@ -2979,7 +2980,10 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 			childVelocity = Vector2.zero
 			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
 		else
-			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
+			-- Feed the previous launch into the next one. This is the
+			-- momentum chain that makes later pieces travel farther.
+			childVelocity = self:_splitLaunchBoost({ boost = chainedBoost }, dir, pieceMass)
+			chainedBoost = childVelocity
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				biggest.pos,
 				biggest.pos + dir * (
@@ -3000,7 +3004,7 @@ end
 -- ==================================================================
 -- FREEZE ability (toggle). Flips state.frozen. When frozen:
 --  * _moveCells skips position updates and boost decay for the
---    owner's cells, so split momentum is preserved verbatim.
+--    owner's cells.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
 --  * _handleEating is NOT gated, so touching cells past their
@@ -3033,103 +3037,20 @@ function GameService:_toggleFreeze(state)
 	else
 		-- Transitioning frozen -> not frozen. Mark an unfreeze grace
 		-- window so _resolveSamePlayerPush eases stacked cells apart
-		-- instead of exploding them outward in one step. Also nudge
-		-- coincident cells by a tiny deterministic offset so the push
-		-- has a direction to resolve.
+		-- instead of exploding them outward in one step.
 		local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
 		if graceSeconds > 0 then
 			state.unfreezeGraceUntil = now + graceSeconds
 			state.unfreezeGraceStart = now
 		end
-		local jitter = math.max(cfg.UnfreezeJitterDistance or 0, 0)
-		if jitter > 0 then
-			for _, id in state.cells do
-				local cell = self.cells[id]
-				if cell then
-					local angle = ((cell.id * 73) % 628) / 100
-					cell.pos = self:_clampToWorld(
-						cell.pos + Vec2.fromAngle(angle) * jitter,
-						cell.radius
-					)
-				end
-			end
-		end
 
-		-- Release fan: add a radial outward boost from the group
-		-- centroid so a stacked pile actually FANS OUT on unfreeze
-		-- instead of stalling in place while the cursor pulls the
-		-- cluster inward.
-		--
-		-- Design:
-		--   * Impulse strength is roughly UNIFORM per cell (no mass
-		--     amplification of tiny cells — that produces "rope"
-		--     spread where small cells fly to the map edge while big
-		--     cells barely move).
-		--   * F-spam guard: only apply if freeze was actually held for
-		--     ReleaseMinHoldSeconds. Instant re-toggles do nothing so
-		--     you can't stack impulses.
-		--   * Boost cap: after applying, clamp total cell.boost
-		--     magnitude to ReleaseImpulse so back-to-back releases
-		--     never accumulate.
-		--   * Skipped for 0/1 cells and if the pile isn't actually
-		--     stacked (mean distance from centroid > 2 * biggest cell
-		--     radius) — no explosive push when your cells are already
-		--     spread out.
-		local releaseImpulse = math.max(cfg.ReleaseImpulse or 0, 0)
-		local minHold = math.max(cfg.ReleaseMinHoldSeconds or 0, 0)
-		local heldEnough = (now - (state.lastFreezeAt or 0)) >= minHold
-			or (state.frozenSince and now - state.frozenSince >= minHold)
-		if releaseImpulse > 0 and #state.cells > 1 and heldEnough then
-			local cx, cy, totalMass = 0, 0, 0
-			local biggestRadius = 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					cx += c.pos.X * c.mass
-					cy += c.pos.Y * c.mass
-					totalMass += c.mass
-					if c.radius > biggestRadius then
-						biggestRadius = c.radius
-					end
-				end
-			end
-			if totalMass > 0 then
-				local centroid = Vector2.new(cx / totalMass, cy / totalMass)
-
-				-- Only fire if the pile is actually clustered.
-				local sumDist = 0
-				local counted = 0
-				for _, id in state.cells do
-					local c = self.cells[id]
-					if c then
-						sumDist += (c.pos - centroid).Magnitude
-						counted += 1
-					end
-				end
-				local meanDist = if counted > 0 then sumDist / counted else 0
-				local stackThreshold = math.max(biggestRadius * 1.6, 1)
-				if meanDist <= stackThreshold then
-					for _, id in state.cells do
-						local cell = self.cells[id]
-						if cell then
-							local delta = cell.pos - centroid
-							local dist = delta.Magnitude
-							local dir
-							if dist > 0.1 then
-								dir = delta / dist
-							else
-								-- Deterministic direction if cell is exactly at centroid.
-								local angle = ((cell.id * 137) % 628) / 100
-								dir = Vec2.fromAngle(angle)
-							end
-							-- Uniform impulse per cell, REPLACING any prior
-							-- boost so F-spam and residual split boost can
-							-- never stack. Cap not needed since we assign
-							-- rather than add.
-							cell.boost = dir * releaseImpulse
-						end
-					end
-				end
+		-- Frozen splits intentionally have no stored launch. Clear any
+		-- older split boost as well so releasing a large stack cannot
+		-- replay stale momentum or fan the cells in random directions.
+		for _, id in state.cells do
+			local cell = self.cells[id]
+			if cell then
+				cell.boost = Vector2.zero
 			end
 		end
 	end

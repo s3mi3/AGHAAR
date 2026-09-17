@@ -40,11 +40,11 @@ local function ensureSerrations(frame: Frame, parts)
 		tooth.AnchorPoint = Vector2.new(0.5, 0.5)
 		tooth.BorderSizePixel = 0
 		tooth.Position = UDim2.fromScale(
-			0.5 + math.cos(angle) * 0.43,
-			0.5 + math.sin(angle) * 0.43
+			0.5 + math.cos(angle) * 0.48,
+			0.5 + math.sin(angle) * 0.48
 		)
 		tooth.Rotation = math.deg(angle) + 45
-		tooth.Size = UDim2.fromScale(0.18, 0.18)
+		tooth.Size = UDim2.fromScale(0.2, 0.2)
 		tooth.Visible = false
 		tooth.Parent = frame
 		parts.serrations[index] = tooth
@@ -130,7 +130,8 @@ local function makeCircle(parent: Instance, zIndex: number)
 	local frame = Instance.new("Frame")
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.BorderSizePixel = 0
-	frame.ClipsDescendants = true
+	-- Serration teeth extend beyond the circular body.
+	frame.ClipsDescendants = false
 	frame.ZIndex = zIndex
 	frame.Visible = false
 	frame.Parent = parent

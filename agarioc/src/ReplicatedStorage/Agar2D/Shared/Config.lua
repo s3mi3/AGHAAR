@@ -197,7 +197,9 @@ Config.Food = {
 }
 
 Config.Virus = {
-	TargetCount = 60, -- was 28; scaled with bigger map
+	-- Keep enough hazards in the enlarged world that several are normally
+	-- visible around a player instead of being lost between camera regions.
+	TargetCount = 120,
 	Mass = 500,
 	Radius = 76,
 	EatSplitMinMass = 2000,
@@ -281,33 +283,13 @@ Config.Freeze = {
 	Enabled = true,
 	Debounce = 0.3, -- was 0.15; longer window kills F-spam scatter
 	Cost = 0,
-	-- Unfreeze grace: after releasing freeze, the server dampens
-	-- same-player push resolution so a stack of overlapping cells
-	-- drifts apart smoothly instead of exploding outward in one step.
-	-- The grace window is short by design — the actual outward motion
-	-- comes from ReleaseImpulse below, which gives cells a radial
-	-- boost from the group centroid. Grace just prevents the tiny
-	-- residual overlap from popping when cells finally separate.
-	UnfreezeGraceSeconds = 1.2, -- was 6.0; shorter, since ReleaseImpulse handles the motion
-	UnfreezeGraceStrength = 0.15, -- was 0.01; not so aggressively suppressed
-	UnfreezeGraceCurveExponent = 1.8, -- was 3.2; gentler ramp
-	UnfreezeMaxOverlapPerPass = 4, -- was 1.2; not the bottleneck anymore
+	-- Overlapping frozen cells are separated gradually after release.
+	-- Their boost is cleared by the server; there is no radial release fan.
+	UnfreezeGraceSeconds = 2.5,
+	UnfreezeGraceStrength = 0.03,
+	UnfreezeGraceCurveExponent = 2.2,
+	UnfreezeMaxOverlapPerPass = 2,
 	UnfreezePushPasses = 1,
-	-- Release fan impulse: on unfreeze, every owned cell gets a
-	-- radial outward boost from the group centroid (UNIFORM per cell,
-	-- not mass-scaled). Total cell.boost is CAPPED to this value so
-	-- F-spam can't stack impulses. ReleaseMinHoldSeconds means an
-	-- instant re-toggle (freeze -> unfreeze within a fraction of a
-	-- second) doesn't emit any impulse at all.
-	ReleaseImpulse = 220, -- was 320; softer fan-out (also assigned, not added, so no stacking)
-	ReleaseImpulseMassExponent = 0.28, -- kept for backward compat; no longer used
-	ReleaseImpulseMinScale = 0.4,       -- kept for backward compat; no longer used
-	ReleaseMinHoldSeconds = 0.4,        -- was 0.25; tap-F does nothing, longer hold to fan out
-	-- When cells are at (nearly) the same point after unfreeze, give
-	-- them a tiny deterministic jitter so the push has a direction to
-	-- resolve against — otherwise they'd sit on top of each other and
-	-- then suddenly pop when the grace ends.
-	UnfreezeJitterDistance = 0.4,
 }
 
 Config.Input = {
@@ -407,7 +389,7 @@ Config.Network = {
 	StaticRefreshMaxInterval = 2.5,
 	MaxCellsPerSnapshot = 220,
 	MaxFoodPerSnapshot = 150,
-	MaxVirusesPerSnapshot = 16,
+	MaxVirusesPerSnapshot = 32,
 	MaxSpawnersPerSnapshot = 8,
 	MaxBarriersPerSnapshot = 6,
 	MaxEjectedPerSnapshot = 120,
