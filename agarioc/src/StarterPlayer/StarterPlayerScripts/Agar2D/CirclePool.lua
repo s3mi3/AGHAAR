@@ -1,0 +1,350 @@
+local CirclePool = {}
+CirclePool.__index = CirclePool
+
+local function cacheFrameParts(frame: Frame)
+	local skin = frame:FindFirstChild("Skin")
+	local avatar = frame:FindFirstChild("Avatar")
+	local labelStack = frame:FindFirstChild("LabelStack")
+	return {
+		stroke = frame:FindFirstChildOfClass("UIStroke"),
+		frameCorner = frame:FindFirstChild("FrameCorner"),
+		skin = skin,
+		skinCorner = skin and skin:FindFirstChild("SkinCorner") or nil,
+		avatar = avatar,
+		avatarCorner = avatar and avatar:FindFirstChild("AvatarCorner") or nil,
+		labelStack = labelStack,
+		nameLabel = labelStack and labelStack:FindFirstChild("NameLabel") or nil,
+		scoreLabel = labelStack and labelStack:FindFirstChild("ScoreLabel") or nil,
+		cache = {},
+	}
+end
+
+local function setCached(parts, key: string, instance: Instance, property: string, value)
+	if parts.cache[key] == value then
+		return
+	end
+	parts.cache[key] = value
+	instance[property] = value
+end
+
+local function resetFrame(frame: Frame, parts)
+	parts.cache = {}
+	frame.Visible = false
+	frame.BackgroundTransparency = 0
+	frame.Position = UDim2.fromOffset(-100000, -100000)
+	frame.Size = UDim2.fromOffset(1, 1)
+	parts.lastZIndex = nil
+
+	if parts.frameCorner then
+		parts.frameCorner.CornerRadius = UDim.new(1, 0)
+	end
+
+	if parts.skin then
+		parts.skin.Visible = false
+		parts.skin.Image = ""
+		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
+		parts.skin.ImageTransparency = 0
+		parts.skin.ImageRectOffset = Vector2.new(0, 0)
+		parts.skin.ImageRectSize = Vector2.new(0, 0)
+	end
+	if parts.skinCorner then
+		parts.skinCorner.CornerRadius = UDim.new(1, 0)
+	end
+
+	if parts.avatar then
+		parts.avatar.Visible = false
+		parts.avatar.Image = ""
+		parts.avatar.ImageColor3 = Color3.fromRGB(255, 255, 255)
+		parts.avatar.ImageTransparency = 0
+		parts.avatar.ImageRectOffset = Vector2.new(0, 0)
+		parts.avatar.ImageRectSize = Vector2.new(0, 0)
+		parts.avatar.ScaleType = Enum.ScaleType.Crop
+	end
+	if parts.avatarCorner then
+		parts.avatarCorner.CornerRadius = UDim.new(1, 0)
+	end
+
+	if parts.labelStack then
+		parts.labelStack.Visible = false
+	end
+end
+
+local function applyZIndex(frame: Frame, parts, zIndex: number)
+	if parts.lastZIndex == zIndex then
+		return
+	end
+	parts.lastZIndex = zIndex
+	frame.ZIndex = zIndex
+	if parts.skin then
+		parts.skin.ZIndex = zIndex + 1
+	end
+	if parts.avatar then
+		parts.avatar.ZIndex = zIndex + 2
+	end
+	if parts.labelStack then
+		parts.labelStack.ZIndex = zIndex + 3
+	end
+	if parts.nameLabel then
+		parts.nameLabel.ZIndex = zIndex + 4
+	end
+	if parts.scoreLabel then
+		parts.scoreLabel.ZIndex = zIndex + 4
+	end
+end
+
+local function makeCircle(parent: Instance, zIndex: number)
+	local frame = Instance.new("Frame")
+	frame.AnchorPoint = Vector2.new(0.5, 0.5)
+	frame.BorderSizePixel = 0
+	frame.ClipsDescendants = true
+	frame.ZIndex = zIndex
+	frame.Visible = false
+	frame.Parent = parent
+
+	local corner = Instance.new("UICorner")
+	corner.Name = "FrameCorner"
+	corner.CornerRadius = UDim.new(1, 0)
+	corner.Parent = frame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Thickness = 1
+	stroke.Transparency = 0.35
+	stroke.Color = Color3.fromRGB(255, 255, 255)
+	stroke.Parent = frame
+
+	local skin = Instance.new("ImageLabel")
+	skin.Name = "Skin"
+	skin.AnchorPoint = Vector2.new(0.5, 0.5)
+	skin.BackgroundTransparency = 1
+	skin.BorderSizePixel = 0
+	skin.Position = UDim2.fromScale(0.5, 0.5)
+	skin.ScaleType = Enum.ScaleType.Crop
+	skin.Size = UDim2.fromScale(1, 1)
+	skin.Visible = false
+	skin.ZIndex = zIndex + 1
+	skin.Parent = frame
+
+	local skinCorner = Instance.new("UICorner")
+	skinCorner.Name = "SkinCorner"
+	skinCorner.CornerRadius = UDim.new(1, 0)
+	skinCorner.Parent = skin
+
+	local avatar = Instance.new("ImageLabel")
+	avatar.Name = "Avatar"
+	avatar.AnchorPoint = Vector2.new(0.5, 0.5)
+	avatar.BackgroundTransparency = 1
+	avatar.BorderSizePixel = 0
+	avatar.Position = UDim2.fromScale(0.5, 0.5)
+	avatar.ScaleType = Enum.ScaleType.Crop
+	avatar.Size = UDim2.fromScale(1, 1)
+	avatar.Visible = false
+	avatar.ZIndex = zIndex + 2
+	avatar.Parent = frame
+
+	local avatarCorner = Instance.new("UICorner")
+	avatarCorner.Name = "AvatarCorner"
+	avatarCorner.CornerRadius = UDim.new(1, 0)
+	avatarCorner.Parent = avatar
+
+	local labelStack = Instance.new("Frame")
+	labelStack.Name = "LabelStack"
+	labelStack.AnchorPoint = Vector2.new(0.5, 0.5)
+	labelStack.BackgroundTransparency = 1
+	labelStack.Position = UDim2.fromScale(0.5, 0.5)
+	labelStack.Size = UDim2.fromScale(0.92, 0.46)
+	labelStack.Visible = false
+	labelStack.ZIndex = zIndex + 3
+	labelStack.Parent = frame
+
+	local nameLabel = Instance.new("TextLabel")
+	nameLabel.Name = "NameLabel"
+	nameLabel.BackgroundTransparency = 1
+	nameLabel.BorderSizePixel = 0
+	nameLabel.Font = Enum.Font.GothamBold
+	nameLabel.Size = UDim2.fromScale(1, 0.5)
+	nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	nameLabel.TextScaled = true
+	nameLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	nameLabel.TextStrokeTransparency = 0.25
+	nameLabel.ZIndex = zIndex + 4
+	nameLabel.Parent = labelStack
+
+	local scoreLabel = Instance.new("TextLabel")
+	scoreLabel.Name = "ScoreLabel"
+	scoreLabel.BackgroundTransparency = 1
+	scoreLabel.BorderSizePixel = 0
+	scoreLabel.Font = Enum.Font.GothamMedium
+	scoreLabel.Position = UDim2.fromScale(0, 0.5)
+	scoreLabel.Size = UDim2.fromScale(1, 0.5)
+	scoreLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	scoreLabel.TextScaled = true
+	scoreLabel.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	scoreLabel.TextStrokeTransparency = 0.25
+	scoreLabel.ZIndex = zIndex + 4
+	scoreLabel.Parent = labelStack
+
+	return frame
+end
+
+function CirclePool.new(parent: Instance, zIndex: number)
+	return setmetatable({
+		parent = parent,
+		zIndex = zIndex,
+		active = {},
+		free = {},
+		retired = {},
+		parts = {},
+		touched = {},
+		stale = {},
+	}, CirclePool)
+end
+
+function CirclePool:_retire(frame: Frame)
+	resetFrame(frame, self.parts[frame])
+	self.retired[#self.retired + 1] = frame
+end
+
+function CirclePool:_promoteRetired()
+	if #self.retired == 0 then
+		return
+	end
+
+	for i = 1, #self.retired do
+		self.free[#self.free + 1] = self.retired[i]
+		self.retired[i] = nil
+	end
+end
+
+function CirclePool:begin()
+	for id in self.touched do
+		self.touched[id] = nil
+	end
+end
+
+function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: Color3, options)
+	local frame = self.active[id]
+	if not frame then
+		frame = table.remove(self.free)
+		if not frame then
+			frame = makeCircle(self.parent, self.zIndex)
+			self.parts[frame] = cacheFrameParts(frame)
+		end
+		resetFrame(frame, self.parts[frame])
+		self.active[id] = frame
+	end
+
+	local parts = self.parts[frame]
+	local zIndex = options and options.zIndex or self.zIndex
+	applyZIndex(frame, parts, zIndex)
+	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
+	local height = options and options.height and math.max(math.floor(options.height + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
+	local x = math.floor(screenPos.X + 0.5)
+	local y = math.floor(screenPos.Y + 0.5)
+	self.touched[id] = true
+	setCached(parts, "frameColor", frame, "BackgroundColor3", color)
+	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
+	frame.Position = UDim2.fromOffset(x, y)
+	frame.Size = UDim2.fromOffset(width, height)
+
+	if parts.stroke then
+		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
+	end
+	if parts.frameCorner then
+		setCached(parts, "frameCorner", parts.frameCorner, "CornerRadius", options and options.cornerRadius or UDim.new(1, 0))
+	end
+
+	if options then
+		if parts.skin then
+			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
+			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
+			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
+			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", options.baseImageTransparency or 0)
+			setCached(parts, "skinRectOffset", parts.skin, "ImageRectOffset", options.baseImageRectOffset or Vector2.new(0, 0))
+			setCached(parts, "skinRectSize", parts.skin, "ImageRectSize", options.baseImageRectSize or Vector2.new(0, 0))
+		end
+		if parts.skinCorner then
+			setCached(parts, "skinCorner", parts.skinCorner, "CornerRadius", options.cornerRadius or UDim.new(1, 0))
+		end
+
+		if parts.avatar then
+			local overlayScale = options.overlayScale or 1
+			local overlaySize = if overlayScale < 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
+			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
+			setCached(parts, "avatarImage", parts.avatar, "Image", options.image or "")
+			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", options.imageColor or Color3.fromRGB(255, 255, 255))
+			setCached(parts, "avatarTransparency", parts.avatar, "ImageTransparency", options.imageTransparency or 0)
+			setCached(parts, "avatarRectOffset", parts.avatar, "ImageRectOffset", options.imageRectOffset or Vector2.new(0, 0))
+			setCached(parts, "avatarRectSize", parts.avatar, "ImageRectSize", options.imageRectSize or Vector2.new(0, 0))
+			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", options.imageScaleType or Enum.ScaleType.Crop)
+			if overlaySize then
+				parts.avatar.Size = UDim2.fromOffset(overlaySize, overlaySize)
+			else
+				parts.avatar.Size = UDim2.fromScale(1, 1)
+			end
+			parts.avatar.Position = UDim2.fromScale(0.5, 0.5)
+		end
+		if parts.avatarCorner then
+			setCached(parts, "avatarCorner", parts.avatarCorner, "CornerRadius", options.cornerRadius or UDim.new(1, 0))
+		end
+
+		if parts.labelStack then
+			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius >= 18)
+			if parts.nameLabel then
+				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
+			end
+			if parts.scoreLabel then
+				setCached(parts, "scoreText", parts.scoreLabel, "Text", options.score or "")
+			end
+		end
+	else
+		if parts.skin then
+			setCached(parts, "skinVisible", parts.skin, "Visible", false)
+			setCached(parts, "skinImage", parts.skin, "Image", "")
+			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
+			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", 0)
+		end
+		if parts.avatar then
+			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
+			setCached(parts, "avatarImage", parts.avatar, "Image", "")
+			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", Color3.fromRGB(255, 255, 255))
+			setCached(parts, "avatarTransparency", parts.avatar, "ImageTransparency", 0)
+			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", Enum.ScaleType.Crop)
+		end
+		if parts.labelStack then
+			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
+		end
+	end
+
+	frame.Visible = true
+end
+
+function CirclePool:release(id: number)
+	local frame = self.active[id]
+	if not frame then
+		return
+	end
+
+	self.active[id] = nil
+	self:_retire(frame)
+end
+
+function CirclePool:finish()
+	local stale = self.stale
+	for i = 1, #stale do
+		stale[i] = nil
+	end
+	for id, frame in self.active do
+		if not self.touched[id] then
+			self:_retire(frame)
+			stale[#stale + 1] = id
+		end
+	end
+
+	for _, id in stale do
+		self.active[id] = nil
+	end
+
+	self:_promoteRetired()
+end
+
+return CirclePool
