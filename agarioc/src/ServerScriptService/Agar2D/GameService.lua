@@ -2830,7 +2830,8 @@ function GameService:_splitPlayer(state)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			spawnPos = self:_clampToWorld(cell.pos, childRadius)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
@@ -2904,7 +2905,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local spawnPos
 			if state.frozen then
 				childVelocity = Vector2.zero
-				spawnPos = self:_clampToWorld(cell.pos, pieceRadius)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -2978,7 +2980,8 @@ function GameService:_multiSplitBiggest(state, totalPieces: number)
 		local staggerOffset = (i - 1) * staggerStep
 		if state.frozen then
 			childVelocity = Vector2.zero
-			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
+			local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			spawnPos = self:_clampToWorld(biggest.pos + dir * frozenNudge, pieceRadius)
 		else
 			-- Feed the previous launch into the next one. This is the
 			-- momentum chain that makes later pieces travel farther.

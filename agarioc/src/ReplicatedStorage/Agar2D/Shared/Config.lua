@@ -87,6 +87,9 @@ Config.Cell = {
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
 	SplitSpawnOffsetRadiusScale = 0.35,
+	-- Frozen splits stay motionless after spawning, but appear a small
+	-- distance toward the cursor so the split still has direction.
+	FrozenSplitNudgeRadiusScale = 0.18,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -204,9 +207,9 @@ Config.Virus = {
 	Radius = 76,
 	EatSplitMinMass = 2000,
 	EatOverlap = 0.5,
-	-- If false, eating a virus just absorbs its mass without bursting
-	-- your cell into pieces. Set to true to restore agar.io behavior.
-	SplitOnEat = false,
+	-- Below the 32-cell cap a virus bursts the eater into more pieces.
+	-- At the cap, the virus is absorbed and its mass is gained instead.
+	SplitOnEat = true,
 	MaxBurstPieces = 8,
 	BumpVelocityTransfer = 1,
 	BumpMinSpeed = 300,
