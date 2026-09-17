@@ -7082,7 +7082,7 @@ Config.Ejected = {
 	MaxCellsPerShotTick = 16,
 	LoadMaxCellsPerShotTick = 12,
 	HeavyLoadMaxCellsPerShotTick = 8,
-	FireHz = 10,
+	FireHz = 15,
 	MaxEjectsPerStep = 6,
 	ConeDegrees = 0, -- zero spread; pellet flies exactly at cursor
 	-- Feeding a small cell inside a cluster: the owned cell nearest
@@ -7276,6 +7276,7 @@ Config.Tunables = {
 
 	-- Ejected (feed)
 	{ path = "Ejected.Mass",                     label = "Feed Pellet Mass",          type = "number", min = 10,   max = 1000,  step = 5 },
+	{ path = "Ejected.FireHz",                   label = "Feed Fire Rate (pellets/s)", type = "number", min = 1,    max = 30,    step = 1 },
 	{ path = "Ejected.Speed",                    label = "Feed Pellet Speed",         type = "number", min = 100,  max = 1500,  step = 10 },
 	{ path = "Ejected.DragPerSecond",            label = "Feed Pellet Drag / s",      type = "number", min = 0,    max = 10,    step = 0.1 },
 	{ path = "Ejected.LifeSeconds",              label = "Feed Pellet Life (s)",      type = "number", min = 1,    max = 60,    step = 0.5 },
