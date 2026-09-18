@@ -4212,7 +4212,12 @@ function Renderer:setLocalFrozen(frozen: boolean)
 	-- instant the freeze releases.
 	if wasFrozen and not self.localFrozen then
 		self.unfreezeGraceStartedAt = os.clock()
-		self:_applyLocalUnfreezeRelease()
+		-- One spring per packed split. Spamming freeze/unfreeze after
+		-- that would keep adding outward boost and fling cells away.
+		if self.unfreezeReleaseSpent ~= true then
+			self:_applyLocalUnfreezeRelease()
+			self.unfreezeReleaseSpent = true
+		end
 	end
 end
 
@@ -4581,6 +4586,9 @@ function Renderer:setSnapshot(snapshot)
 				if state.isOwn then
 					state.visualSeparateUntil = separateUntil
 				end
+			end
+			if ownCellsInSnapshot &gt;= 2 then
+				self.unfreezeReleaseSpent = false
 			end
 		end
 		self.lastOwnCellCount = ownCellsInSnapshot
@@ -7860,7 +7868,10 @@ function MainMenu:_buildSettingsPage()
 		self.mapMode = "custom"
 		local h, s, v = self.mapColor:ToHSV()
 		self.pickerH, self.pickerS, self.pickerV = h, s, v
-		self:_applyPicker(true)
+		self:_paintPicker()
+		if self.pickerFrame then
+			self.pickerFrame.Visible = true
+		end
 		self:_refreshSettings()
 	end)
 
@@ -8348,12 +8359,19 @@ function MainMenu:_applyMapColor(bg, grid, save)
 end
 
 function MainMenu:setOpen(open)
+	local becomingOpen = open == true and self.open ~= true
 	self.open = open == true
 	self.gui.Enabled = true
 	self.dim.Visible = self.open
 	self.panel.Visible = self.open
 	if self.renderer then
 		self.renderer.mainMenuOpen = self.open
+	end
+	if becomingOpen and self.social.playing then
+		local lock = math.max(Config.Social and Config.Social.SpectateLockSeconds or 10, 0)
+		self.spectateUnlockAt = os.clock() + lock
+		self:_fire({ action = "menuOpen" })
+		self:_refreshLockLabel()
 	end
 end
 
@@ -8442,16 +8460,19 @@ function MainMenu:handleUpdate(payload)
 		if typeof(payload.mapColor) == "table" and typeof(payload.gridColor) == "table" then
 			local bg = Color3.new(payload.mapColor[1] or 1, payload.mapColor[2] or 1, payload.mapColor[3] or 1)
 			local grid = Color3.new(payload.gridColor[1] or 0.85, payload.gridColor[2] or 0.88, payload.gridColor[3] or 0.92)
-			if colorsClose(bg, MAP_LIGHT.bg) then
-				self.mapMode = "light"
-			elseif colorsClose(bg, MAP_DARK.bg) then
-				self.mapMode = "dark"
-			else
-				self.mapMode = "custom"
-				local h, s, v = bg:ToHSV()
-				self.pickerH, self.pickerS, self.pickerV = h, s, v
+			local pickerOpen = self.pickerFrame and self.pickerFrame.Visible == true
+			if not pickerOpen then
+				if colorsClose(bg, MAP_LIGHT.bg) then
+					self.mapMode = "light"
+				elseif colorsClose(bg, MAP_DARK.bg) then
+					self.mapMode = "dark"
+				else
+					self.mapMode = "custom"
+					local h, s, v = bg:ToHSV()
+					self.pickerH, self.pickerS, self.pickerV = h, s, v
+				end
+				self:_applyMapColor(bg, grid, false)
 			end
-			self:_applyMapColor(bg, grid, false)
 		end
 		if self.renderer and self.renderer.setSocialWorld then
 			self.renderer:setSocialWorld(self.social)
@@ -12314,6 +12335,7 @@ function GameService:_addPlayer(player: Player)
 		mapColor = nil,
 		gridColor = nil,
 		socialMessage = nil,
+		unfreezeSpringSpent = false,
 	}
 
 	self.playersByUserId[player.UserId] = state
@@ -12753,6 +12775,9 @@ function GameService:_spawnPlayerCell(state, pos: Vector2, mass: number, boost: 
 
 	self.cells[id] = cell
 	state.cells[#state.cells + 1] = id
+	if #state.cells &gt;= 2 then
+		state.unfreezeSpringSpent = false
+	end
 	return cell
 end
 
@@ -14323,8 +14348,13 @@ function GameService:_toggleFreeze(state)
 	else
 		-- Transitioning frozen -&gt; not frozen. Keep paused split
 		-- momentum and spring overlapping pieces outward so they
-		-- don't ooze apart and then clump on the cursor.
-		self:_applyUnfreezeRelease(state)
+		-- don't ooze apart and then clump on the cursor. Only the
+		-- first unfreeze after a split spends that spring; extra
+		-- freeze/unfreeze taps must not keep flinging cells out.
+		if state.unfreezeSpringSpent ~= true then
+			self:_applyUnfreezeRelease(state)
+			state.unfreezeSpringSpent = true
+		end
 		local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
 		if graceSeconds &gt; 0 then
 			state.unfreezeGraceUntil = now + graceSeconds
@@ -17229,6 +17259,7 @@ function GameService:_playPlayer(state, spawnNear: boolean?, spawnMode: string?,
 	state.lastEjectToken = state.input.ejectToken
 	state.ejectCycleOffset = 0
 	state.frozen = false
+	state.unfreezeSpringSpent = false
 	self:_spawnPlayerCell(state, pos, startMassForLevel(state.accountLevel), Vector2.zero)
 	state.needsStaticSnapshot = true
 	self:_sendSocial(state, { kind = "hello" })
@@ -17251,6 +17282,12 @@ function GameService:_handleSocialAction(player: Player, payload)
 		if self:_enterSpectate(state, false) then
 			self:_sendSocial(state, { kind = "hello" })
 			self:_broadcastSocial()
+		end
+		return
+	elseif action == "menuOpen" then
+		if state.playing == true then
+			state.spectateUnlockAt = os.clock() + math.max(Config.Social and Config.Social.SpectateLockSeconds or 10, 0)
+			self:_sendSocial(state)
 		end
 		return
 	elseif action == "settings" then
