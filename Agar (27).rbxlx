@@ -6948,14 +6948,35 @@ local BIND_ORDER = {
 	{ id = "tripleSplit", label = "Triple Split" },
 }
 
-local MAP_PRESETS = {
-	{ name = "Classic", bg = Color3.fromRGB(247, 247, 247), grid = Color3.fromRGB(218, 225, 235) },
-	{ name = "Night", bg = Color3.fromRGB(18, 22, 28), grid = Color3.fromRGB(42, 50, 62) },
-	{ name = "Ocean", bg = Color3.fromRGB(186, 224, 240), grid = Color3.fromRGB(140, 190, 214) },
-	{ name = "Sand", bg = Color3.fromRGB(236, 220, 186), grid = Color3.fromRGB(210, 188, 148) },
-	{ name = "Forest", bg = Color3.fromRGB(210, 228, 196), grid = Color3.fromRGB(168, 196, 150) },
-	{ name = "Void", bg = Color3.fromRGB(8, 8, 12), grid = Color3.fromRGB(36, 36, 48) },
+local MAP_LIGHT = {
+	bg = Color3.fromRGB(247, 247, 247),
+	grid = Color3.fromRGB(218, 225, 235),
 }
+local MAP_DARK = {
+	bg = Color3.fromRGB(18, 22, 28),
+	grid = Color3.fromRGB(42, 50, 62),
+}
+
+local function gridFromBackground(bg: Color3): Color3
+	local h, s, v = bg:ToHSV()
+	if v &gt; 0.55 then
+		return Color3.fromHSV(h, math.clamp(s * 0.5, 0, 1), math.clamp(v * 0.86, 0.2, 1))
+	end
+	return Color3.fromHSV(h, math.clamp(s * 0.55, 0, 1), math.clamp(v + 0.18, 0, 0.85))
+end
+
+local function colorsClose(a: Color3, b: Color3): boolean
+	return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) &lt; 0.05
+end
+
+local function pointer01(gui, input): (number, number)
+	local pos = input.Position
+	local abs = gui.AbsolutePosition
+	local size = gui.AbsoluteSize
+	local x = math.clamp((pos.X - abs.X) / math.max(size.X, 1), 0, 1)
+	local y = math.clamp((pos.Y - abs.Y) / math.max(size.Y, 1), 0, 1)
+	return x, y
+end
 
 local function corner(parent, radius)
 	local c = Instance.new("UICorner")
@@ -7096,8 +7117,13 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 		spawnMode = "open",
 		spawnUserId = nil,
 		spectateUnlockAt = 0,
-		mapColor = MAP_PRESETS[1].bg,
-		gridColor = MAP_PRESETS[1].grid,
+		mapColor = MAP_LIGHT.bg,
+		gridColor = MAP_LIGHT.grid,
+		mapMode = "light",
+		pickerH = 0.38,
+		pickerS = 0.35,
+		pickerV = 0.95,
+		pickerDrag = nil,
 		statusLabel = nil,
 		lockLabel = nil,
 		codeBox = nil,
@@ -7308,14 +7334,35 @@ function MainMenu:_buildSettingsPage()
 	leftLayout.Parent = left
 
 	label(left, "Map colour", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
-	for _, preset in MAP_PRESETS do
-		local b = button(left, preset.name, preset.bg)
-		b.Size = UDim2.new(1, 0, 0, 32)
-		b.TextColor3 = if preset.name == "Night" or preset.name == "Void" then TEXT else Color3.fromRGB(20, 24, 28)
-		b.MouseButton1Click:Connect(function()
-			self:_applyMapColor(preset.bg, preset.grid, true)
-		end)
-	end
+
+	self.mapLightButton = button(left, "Light", MAP_LIGHT.bg)
+	self.mapLightButton.Size = UDim2.new(1, 0, 0, 32)
+	self.mapLightButton.MouseButton1Click:Connect(function()
+		self.mapMode = "light"
+		self:_applyMapColor(MAP_LIGHT.bg, MAP_LIGHT.grid, true)
+		self:_refreshSettings()
+	end)
+
+	self.mapDarkButton = button(left, "Dark", MAP_DARK.bg)
+	self.mapDarkButton.Size = UDim2.new(1, 0, 0, 32)
+	self.mapDarkButton.TextColor3 = TEXT
+	self.mapDarkButton.MouseButton1Click:Connect(function()
+		self.mapMode = "dark"
+		self:_applyMapColor(MAP_DARK.bg, MAP_DARK.grid, true)
+		self:_refreshSettings()
+	end)
+
+	self.mapPickerButton = button(left, "Colour picker", Color3.fromRGB(200, 206, 214))
+	self.mapPickerButton.Size = UDim2.new(1, 0, 0, 32)
+	self.mapPickerButton.MouseButton1Click:Connect(function()
+		self.mapMode = "custom"
+		local h, s, v = self.mapColor:ToHSV()
+		self.pickerH, self.pickerS, self.pickerV = h, s, v
+		self:_applyPicker(true)
+		self:_refreshSettings()
+	end)
+
+	self:_buildColourPicker(left)
 
 	local right = Instance.new("ScrollingFrame")
 	right.BackgroundTransparency = 1
@@ -7355,6 +7402,193 @@ function MainMenu:_buildSettingsPage()
 		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
 		self:_refreshPlay()
 	end)
+end
+
+function MainMenu:_buildColourPicker(parent)
+	local frame = Instance.new("Frame")
+	frame.Name = "ColourPicker"
+	frame.BackgroundColor3 = PANEL2
+	frame.BorderSizePixel = 0
+	frame.Size = UDim2.new(1, 0, 0, 214)
+	frame.Visible = false
+	frame.Parent = parent
+	corner(frame, 8)
+	self.pickerFrame = frame
+
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 10)
+	pad.PaddingLeft = UDim.new(0, 10)
+	pad.PaddingRight = UDim.new(0, 10)
+	pad.PaddingBottom = UDim.new(0, 10)
+	pad.Parent = frame
+
+	local sv = Instance.new("TextButton")
+	sv.Name = "SV"
+	sv.AutoButtonColor = false
+	sv.BorderSizePixel = 0
+	sv.Position = UDim2.fromOffset(0, 0)
+	sv.Size = UDim2.new(1, 0, 0, 132)
+	sv.Text = ""
+	sv.Parent = frame
+	corner(sv, 6)
+	self.pickerSV = sv
+
+	local white = Instance.new("Frame")
+	white.BackgroundColor3 = Color3.new(1, 1, 1)
+	white.BorderSizePixel = 0
+	white.Size = UDim2.fromScale(1, 1)
+	white.ZIndex = 2
+	white.Parent = sv
+	local whiteGrad = Instance.new("UIGradient")
+	whiteGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	whiteGrad.Parent = white
+	local whiteCorner = Instance.new("UICorner")
+	whiteCorner.CornerRadius = UDim.new(0, 6)
+	whiteCorner.Parent = white
+
+	local black = Instance.new("Frame")
+	black.BackgroundColor3 = Color3.new(0, 0, 0)
+	black.BorderSizePixel = 0
+	black.Size = UDim2.fromScale(1, 1)
+	black.ZIndex = 3
+	black.Parent = sv
+	local blackGrad = Instance.new("UIGradient")
+	blackGrad.Rotation = 90
+	blackGrad.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	blackGrad.Parent = black
+	local blackCorner = Instance.new("UICorner")
+	blackCorner.CornerRadius = UDim.new(0, 6)
+	blackCorner.Parent = black
+
+	local svCursor = Instance.new("Frame")
+	svCursor.AnchorPoint = Vector2.new(0.5, 0.5)
+	svCursor.BackgroundColor3 = Color3.new(1, 1, 1)
+	svCursor.BorderSizePixel = 0
+	svCursor.Size = UDim2.fromOffset(12, 12)
+	svCursor.ZIndex = 4
+	svCursor.Parent = sv
+	corner(svCursor, 6)
+	local svStroke = Instance.new("UIStroke")
+	svStroke.Color = Color3.new(0, 0, 0)
+	svStroke.Thickness = 1
+	svStroke.Parent = svCursor
+	self.pickerSVCursor = svCursor
+
+	local hue = Instance.new("TextButton")
+	hue.Name = "Hue"
+	hue.AutoButtonColor = false
+	hue.BorderSizePixel = 0
+	hue.Position = UDim2.fromOffset(0, 140)
+	hue.Size = UDim2.new(1, 0, 0, 16)
+	hue.Text = ""
+	hue.Parent = frame
+	corner(hue, 6)
+	local hueGrad = Instance.new("UIGradient")
+	hueGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 0, 0)),
+		ColorSequenceKeypoint.new(0.17, Color3.fromRGB(255, 255, 0)),
+		ColorSequenceKeypoint.new(0.33, Color3.fromRGB(0, 255, 0)),
+		ColorSequenceKeypoint.new(0.5, Color3.fromRGB(0, 255, 255)),
+		ColorSequenceKeypoint.new(0.67, Color3.fromRGB(0, 0, 255)),
+		ColorSequenceKeypoint.new(0.83, Color3.fromRGB(255, 0, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 0, 0)),
+	})
+	hueGrad.Parent = hue
+	self.pickerHue = hue
+
+	local hueCursor = Instance.new("Frame")
+	hueCursor.AnchorPoint = Vector2.new(0.5, 0.5)
+	hueCursor.BackgroundColor3 = Color3.new(1, 1, 1)
+	hueCursor.BorderSizePixel = 0
+	hueCursor.Position = UDim2.fromScale(0, 0.5)
+	hueCursor.Size = UDim2.fromOffset(8, 18)
+	hueCursor.ZIndex = 4
+	hueCursor.Parent = hue
+	corner(hueCursor, 3)
+	local hueStroke = Instance.new("UIStroke")
+	hueStroke.Color = Color3.new(0, 0, 0)
+	hueStroke.Thickness = 1
+	hueStroke.Parent = hueCursor
+	self.pickerHueCursor = hueCursor
+
+	local preview = Instance.new("Frame")
+	preview.BorderSizePixel = 0
+	preview.Position = UDim2.fromOffset(0, 164)
+	preview.Size = UDim2.new(1, 0, 0, 28)
+	preview.Parent = frame
+	corner(preview, 6)
+	self.pickerPreview = preview
+
+	sv.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self.pickerDrag = "sv"
+			self:_updatePickerFromInput(input)
+		end
+	end)
+	hue.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self.pickerDrag = "hue"
+			self:_updatePickerFromInput(input)
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if self.pickerDrag and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+			self:_updatePickerFromInput(input)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if self.pickerDrag and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
+			self:_updatePickerFromInput(input)
+			self.pickerDrag = nil
+			self:_applyPicker(true)
+		end
+	end)
+
+	self:_paintPicker()
+end
+
+function MainMenu:_paintPicker()
+	if not self.pickerSV then
+		return
+	end
+	self.pickerSV.BackgroundColor3 = Color3.fromHSV(self.pickerH, 1, 1)
+	self.pickerSVCursor.Position = UDim2.fromScale(self.pickerS, 1 - self.pickerV)
+	self.pickerHueCursor.Position = UDim2.fromScale(self.pickerH, 0.5)
+	local color = Color3.fromHSV(self.pickerH, self.pickerS, self.pickerV)
+	self.pickerPreview.BackgroundColor3 = color
+	if self.mapPickerButton then
+		self.mapPickerButton.BackgroundColor3 = color
+		local luma = color.R * 0.25 + color.G * 0.5 + color.B * 0.25
+		self.mapPickerButton.TextColor3 = if luma &lt; 0.45 then TEXT else Color3.fromRGB(16, 20, 24)
+	end
+end
+
+function MainMenu:_applyPicker(save)
+	local bg = Color3.fromHSV(self.pickerH, self.pickerS, self.pickerV)
+	self:_applyMapColor(bg, gridFromBackground(bg), save == true)
+	self:_paintPicker()
+end
+
+function MainMenu:_updatePickerFromInput(input)
+	if self.pickerDrag == "hue" and self.pickerHue then
+		local x = pointer01(self.pickerHue, input)
+		self.pickerH = x
+		self.mapMode = "custom"
+		self:_applyPicker(false)
+	elseif self.pickerDrag == "sv" and self.pickerSV then
+		local x, y = pointer01(self.pickerSV, input)
+		self.pickerS = x
+		self.pickerV = 1 - y
+		self.mapMode = "custom"
+		self:_applyPicker(false)
+	end
 end
 
 function MainMenu:_makeList(parent, title, size, pos)
@@ -7562,6 +7796,15 @@ function MainMenu:handleUpdate(payload)
 		if typeof(payload.mapColor) == "table" and typeof(payload.gridColor) == "table" then
 			local bg = Color3.new(payload.mapColor[1] or 1, payload.mapColor[2] or 1, payload.mapColor[3] or 1)
 			local grid = Color3.new(payload.gridColor[1] or 0.85, payload.gridColor[2] or 0.88, payload.gridColor[3] or 0.92)
+			if colorsClose(bg, MAP_LIGHT.bg) then
+				self.mapMode = "light"
+			elseif colorsClose(bg, MAP_DARK.bg) then
+				self.mapMode = "dark"
+			else
+				self.mapMode = "custom"
+				local h, s, v = bg:ToHSV()
+				self.pickerH, self.pickerS, self.pickerV = h, s, v
+			end
 			self:_applyMapColor(bg, grid, false)
 		end
 		if self.renderer and self.renderer.setSocialWorld then
@@ -7744,6 +7987,24 @@ function MainMenu:_refreshSettings()
 			b.Text = "Press a key..."
 		else
 			b.Text = keyName(self.keybinds[id])
+		end
+	end
+	if self.mapLightButton then
+		local selected = Color3.fromRGB(16, 20, 24)
+		self.mapLightButton.BackgroundColor3 = if self.mapMode == "light" then ACCENT else MAP_LIGHT.bg
+		self.mapLightButton.TextColor3 = if self.mapMode == "light" then selected else Color3.fromRGB(20, 24, 28)
+		self.mapDarkButton.BackgroundColor3 = if self.mapMode == "dark" then ACCENT else MAP_DARK.bg
+		self.mapDarkButton.TextColor3 = if self.mapMode == "dark" then selected else TEXT
+		if self.mapMode == "custom" then
+			self.mapPickerButton.BackgroundColor3 = ACCENT
+			self.mapPickerButton.TextColor3 = selected
+			self:_paintPicker()
+		else
+			self.mapPickerButton.BackgroundColor3 = Color3.fromRGB(200, 206, 214)
+			self.mapPickerButton.TextColor3 = Color3.fromRGB(20, 24, 28)
+		end
+		if self.pickerFrame then
+			self.pickerFrame.Visible = self.mapMode == "custom"
 		end
 	end
 end
