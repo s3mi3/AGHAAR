@@ -886,6 +886,12 @@ function GameService:_handleConfigUpdate(player: Player, payload)
 			end
 		end
 	end
+	if Config.Player.MinSpeed > Config.Player.BaseSpeed then
+		-- Keep live speed edits safe for math.clamp and preserve the meaning
+		-- of BaseSpeed as the small-cell maximum.
+		Config.Player.MinSpeed = Config.Player.BaseSpeed
+		applied["Player.MinSpeed"] = Config.Player.MinSpeed
+	end
 	if next(applied) ~= nil and self.remotes and self.remotes.ConfigUpdate then
 		self.remotes.ConfigUpdate:FireAllClients({ kind = "sync", values = applied })
 	end

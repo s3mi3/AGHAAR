@@ -77,11 +77,11 @@ Config.Cell = {
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 600,
+	SplitImpulse = 500,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SplitInheritedBoostScale = 0.65,
-	SplitMaxBoost = 1050,
+	SplitMaxBoost = 900,
 	SplitBoostDragPerSecond = 2.4,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
@@ -531,7 +531,9 @@ Config.Admin = {
 
 Config.Tunables = {
 	-- Cell
-	{ path = "Cell.SplitImpulse",                label = "Split Impulse",             type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitImpulse",                label = "Split Distance",            type = "number", min = 100,  max = 2000,  step = 25 },
+	{ path = "Cell.SplitMaxBoost",               label = "Split Momentum Cap",        type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitBoostDragPerSecond",     label = "Split Braking (higher = shorter)", type = "number", min = 0.5, max = 10, step = 0.1 },
 	{ path = "Cell.SplitMinMass",                label = "Split Min Mass",            type = "number", min = 100,  max = 20000, step = 100, int = true },
 	{ path = "Cell.RecombineMinSeconds",         label = "Merge Cooldown Min (s)",    type = "number", min = 0.1,  max = 15,    step = 0.1 },
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
@@ -545,9 +547,9 @@ Config.Tunables = {
 
 	-- Player
 	{ path = "Player.MaxCells",                  label = "Max Cells",                 type = "number", min = 1,    max = 64,    step = 1, int = true },
-	{ path = "Player.BaseSpeed",                 label = "Base Speed",                type = "number", min = 50,   max = 1200,  step = 5 },
-	{ path = "Player.MinSpeed",                  label = "Min Speed",                 type = "number", min = 10,   max = 500,   step = 5 },
-	{ path = "Player.SpeedExponent",             label = "Speed Exponent",            type = "number", min = 0,    max = 2,     step = 0.01 },
+	{ path = "Player.BaseSpeed",                 label = "Small Cell Max Speed",      type = "number", min = 50,   max = 1200,  step = 5 },
+	{ path = "Player.MinSpeed",                  label = "Large Cell Min Speed",      type = "number", min = 10,   max = 500,   step = 5 },
+	{ path = "Player.SpeedExponent",             label = "Size Slowdown Strength",    type = "number", min = 0.05, max = 2,     step = 0.01 },
 	{ path = "Player.DecayPerSecond",            label = "Decay / Second",            type = "number", min = 0,    max = 0.02,  step = 0.0001 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
 
