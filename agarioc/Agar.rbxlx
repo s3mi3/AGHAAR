@@ -6909,14 +6909,13 @@ Config.Cell = {
 	-- speed * ratio) so they can't sprint away from the pack.
 	-- CohesionStrength (0..1) adds a gentle pull toward the group's
 	-- center of mass when a cell drifts far from it. 0 disables.
-	-- CohesionStrength is now 0: the constant tug toward the centroid
-	-- was reading as "snappy / pulling together", especially the
-	-- instant you froze. Cluster speed cap alone keeps the pack tight
-	-- without any active pulling force.
+	-- Keep this mild: the server's sibling push still prevents overlap
+	-- before recombination, while cohesion helps separated cells regroup.
+	-- Frozen cells remain untouched because movement is paused server-side.
 	-- Ratio raised from 1.15 to 1.6 so small cells can catch up to
 	-- the big cell instead of feeling "roped" behind it.
 	ClusterMaxSpeedRatio = 1.6,
-	CohesionStrength = 0,
+	CohesionStrength = 0.12,
 
 	-- Splits aim directly from each source cell at the cursor.
 	SplitGroupFanRadians = 0,
