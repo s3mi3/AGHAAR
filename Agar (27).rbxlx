@@ -4357,9 +4357,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
 			if isMerge then
-				bestTarget.mergeGrowthStartRadius = bestTarget.radius
-				bestTarget.mergeGrowthStartedAt = now
-				bestTarget.mergeGrowthUntil = now + duration
 				self:_exciteLiquidEdge(bestTarget, now, 0.8)
 			end
 			state.extrapolate = false
@@ -4509,6 +4506,14 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			local direction = self.localMoveAim or Vector2.new(1, 0)
 			if extra and not extra.isOwn then direction = state.velocity or direction end
 			self:_startSplitFlex(state, direction, os.clock(), true)
+		end
+		if kind == "cell" and radius &gt; (state.radius or 0) + 0.01 then
+			local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
+			state.radius = state.radius + (radius - state.radius) * pop
+			state.radiusVelocity = 0
+			state.mergeGrowthUntil = nil
+			state.mergeGrowthStartRadius = nil
+			state.mergeGrowthStartedAt = nil
 		end
 		if isStatic then
 			local tolerance = Config.Render.StaticPositionTolerance or 2
@@ -5024,21 +5029,8 @@ end
 function Renderer:_stepCellRadius(state, dt: number)
 	local target = state.targetRadius or state.radius
 	local current = state.radius
-	local now = os.clock()
-	local mergeUntil = state.mergeGrowthUntil or 0
-	if mergeUntil &gt; now and typeof(state.mergeGrowthStartRadius) == "number" then
-		local started = state.mergeGrowthStartedAt or (mergeUntil - (Config.Render.MergeAnimationSeconds or 2.2))
-		local duration = math.max(mergeUntil - started, 0.01)
-		local progress = math.clamp((now - started) / duration, 0, 1)
-		local growStart = math.clamp(Config.Render.MergeGrowStart or 0.2, 0, 0.75)
-		local t = math.clamp((progress - growStart) / math.max(1 - growStart, 0.01), 0, 1)
-		t = t * t * t * (t * (t * 6 - 15) + 10)
-		state.radius = state.mergeGrowthStartRadius + (target - state.mergeGrowthStartRadius) * t
-		state.radiusVelocity = 0
-		return
-	end
 	local growing = target &gt; current
-	local sharpness = math.max(if growing then Config.Render.CellGrowthSharpness or 11
+	local sharpness = math.max(if growing then Config.Render.CellGrowthSharpness or 32
 		else Config.Render.CellShrinkSharpness or 24, 0.1)
 	local velocity = state.radiusVelocity or 0
 	-- A split/decay reverses growth without a one-frame outward kick.
@@ -7657,8 +7649,11 @@ Config.Render = {
 	LiquidEdgeMinPixels = 14,
 	SplitFlexSeconds = 0.36,
 	SplitFlexStrength = 0.045,
-	-- Separate size response from position smoothing; authoritative mass is immediate.
-	CellGrowthSharpness = 11,
+	-- Separate size response from position smoothing. Mass gain should
+	-- read immediately; delayed merge growth made the camera zoom in
+	-- on a still-small blob.
+	MassGainRadiusPop = 0.82,
+	CellGrowthSharpness = 32,
 	CellShrinkSharpness = 24,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
@@ -7711,14 +7706,12 @@ Config.Render = {
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
-	-- Sibling swallow: long enough to read as a merge, not a pop.
-	-- The eaten cell rides the eater and stays full-size, then pours in
-	-- while the eater grows over the same window.
+	-- Sibling swallow: the eaten cell rides the eater. The eater pops
+	-- to its new size immediately so the camera does not zoom in on a
+	-- still-small blob.
 	MergeAnimationSeconds = 2.2,
 	MergePullStart = 0.06,
 	MergeShrinkStart = 0.34,
-	MergeGrowStart = 0.2,
-	MergeGrowthSharpness = 2.4,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -7761,6 +7754,7 @@ Config.Tunables = {
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
 	{ path = "Cell.RecombinePerScaleMass",       label = "Merge sec / ScaleMass",     type = "number", min = 0,    max = 30,    step = 0.1 },
 	{ path = "Render.MergeAnimationSeconds",     label = "Merge Swallow (s)",         type = "number", min = 0.4,  max = 4,     step = 0.05 },
+	{ path = "Render.CellGrowthSharpness",       label = "Mass Gain Snap",            type = "number", min = 4,    max = 80,    step = 1 },
 	{ path = "Cell.MultiSplitFanRadians",        label = "Multi-Split Fan (rad)",     type = "number", min = 0,    max = 1.5,   step = 0.01 },
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 0,    max = 10,    step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
