@@ -2810,6 +2810,9 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 		lastPinchScale = nil,
 		lastTouchLayoutEnabled = nil,
 		lastTouchLayoutViewport = nil,
+		hudEditEnabled = false,
+		hudLayout = {},
+		hudWidgets = nil,
 		keybinds = {
 			split = Enum.KeyCode.Space,
 			feed = Enum.KeyCode.W,
@@ -2823,6 +2826,9 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 
 	UserInputService.InputBegan:Connect(function(input, processed)
 		if input.UserInputType == Enum.UserInputType.Touch then
+			if self.hudEditEnabled then
+				return
+			end
 			self:_beginMoveTouch(input)
 			return
 		end
@@ -2904,6 +2910,9 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 	end)
 
 	UserInputService.TouchPinch:Connect(function(_, scale, _, state)
+		if self.hudEditEnabled then
+			return
+		end
 		if state == Enum.UserInputState.Begin then
 			self.lastPinchScale = scale
 		elseif state == Enum.UserInputState.Change and self.lastPinchScale and self.lastPinchScale &gt; 0 then
@@ -2915,6 +2924,9 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 	end)
 
 	shootButton.InputBegan:Connect(function(input)
+		if self.hudEditEnabled then
+			return
+		end
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			setTouchButtonPressed(shootButton, true)
 			self.ejectHeld = true
@@ -2933,6 +2945,9 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 	end)
 
 	splitButton.InputBegan:Connect(function(input)
+		if self.hudEditEnabled then
+			return
+		end
 		if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
 			setTouchButtonPressed(splitButton, true)
 		end
@@ -2945,8 +2960,13 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 	end)
 
 	splitButton.Activated:Connect(function()
+		if self.hudEditEnabled then
+			return
+		end
 		self.splitToken += 1
 	end)
+
+	self:_initHudWidgets()
 
 	return self
 end
@@ -2971,6 +2991,9 @@ function InputController:_shouldUseMoveTouch(input): boolean
 end
 
 function InputController:_beginMoveTouch(input)
+	if self.hudEditEnabled then
+		return
+	end
 	if not self:_shouldUseMoveTouch(input) then
 		return
 	end
@@ -3022,7 +3045,7 @@ function InputController:_layoutTouchButtons()
 	local touchOnly = UserInputService.TouchEnabled
 	local viewport = self.camera.viewport
 	local layoutChanged = self.lastTouchLayoutEnabled ~= touchOnly
-	if touchOnly then
+	if touchOnly or self.hudEditEnabled then
 		layoutChanged = layoutChanged
 			or not self.lastTouchLayoutViewport
 			or (self.lastTouchLayoutViewport - viewport).Magnitude &gt;= 1
@@ -3033,23 +3056,34 @@ function InputController:_layoutTouchButtons()
 
 	self.lastTouchLayoutEnabled = touchOnly
 	self.lastTouchLayoutViewport = viewport
-	self.shootButton.Visible = touchOnly
-	self.splitButton.Visible = touchOnly
 
-	if not touchOnly then
+	local showButtons = touchOnly or self.hudEditEnabled == true
+	self.shootButton.Visible = showButtons
+	self.splitButton.Visible = showButtons
+
+	if not showButtons then
 		return
 	end
 
 	local size = 70
 	self.joystickRadius = math.clamp(math.min(viewport.X, viewport.Y) * 0.105, 48, 78)
-
-	self.shootButton.Size = UDim2.fromOffset(size, size)
-	self.splitButton.Size = UDim2.fromOffset(size, size)
 	self.joystickBase.Size = UDim2.fromOffset(self.joystickRadius * 2, self.joystickRadius * 2)
 	self.joystickThumb.Size = UDim2.fromOffset(self.joystickRadius * 0.9, self.joystickRadius * 0.9)
 
-	self.shootButton.Position = TOUCH_BUTTON_POSITIONS.Shoot
-	self.splitButton.Position = TOUCH_BUTTON_POSITIONS.Split
+	if self.hudLayout and self.hudLayout.shoot then
+		self:_applyHudLayoutEntry(self.shootButton, self.hudLayout.shoot, self.hudWidgets and self.hudWidgets.shoot)
+	else
+		self.shootButton.AnchorPoint = Vector2.new(0, 0)
+		self.shootButton.Size = UDim2.fromOffset(size, size)
+		self.shootButton.Position = TOUCH_BUTTON_POSITIONS.Shoot
+	end
+	if self.hudLayout and self.hudLayout.split then
+		self:_applyHudLayoutEntry(self.splitButton, self.hudLayout.split, self.hudWidgets and self.hudWidgets.split)
+	else
+		self.splitButton.AnchorPoint = Vector2.new(0, 0)
+		self.splitButton.Size = UDim2.fromOffset(size, size)
+		self.splitButton.Position = TOUCH_BUTTON_POSITIONS.Split
+	end
 
 	self:_layoutJoystick()
 end
@@ -3208,6 +3242,276 @@ function InputController:setKeybinds(binds)
 	end
 end
 
+local function inputHudCapture(frame)
+	local parent = frame.Parent
+	if not parent then
+		return nil
+	end
+	local size = frame.AbsoluteSize
+	if size.X &lt; 2 or size.Y &lt; 2 then
+		return nil
+	end
+	local psize = parent.AbsoluteSize
+	local pos = frame.AbsolutePosition - parent.AbsolutePosition
+	return {
+		x = pos.X / math.max(psize.X, 1),
+		y = pos.Y / math.max(psize.Y, 1),
+		w = size.X,
+		h = size.Y,
+	}
+end
+
+function InputController:_applyHudLayoutEntry(frame, layout, limits)
+	if typeof(layout) ~= "table" then
+		return
+	end
+	local minW = limits and limits.minW or 48
+	local minH = limits and limits.minH or 48
+	local maxW = limits and limits.maxW or 220
+	local maxH = limits and limits.maxH or 220
+	local w = math.clamp(tonumber(layout.w) or 70, minW, maxW)
+	local h = math.clamp(tonumber(layout.h) or 70, minH, maxH)
+	if limits and limits.square then
+		local side = math.clamp(math.max(w, h), minW, math.min(maxW, maxH))
+		w, h = side, side
+	end
+	frame.AnchorPoint = Vector2.new(0, 0)
+	frame.Position = UDim2.fromScale(
+		math.clamp(tonumber(layout.x) or 0, -0.05, 1.05),
+		math.clamp(tonumber(layout.y) or 0, -0.05, 1.05)
+	)
+	frame.Size = UDim2.fromOffset(w, h)
+end
+
+function InputController:_makeHudGrab(widget)
+	local frame = widget.frame
+	local grab = Instance.new("TextButton")
+	grab.Name = "HudGrab"
+	grab.AutoButtonColor = false
+	grab.BackgroundColor3 = Color3.fromRGB(88, 214, 90)
+	grab.BackgroundTransparency = 0.7
+	grab.BorderSizePixel = 0
+	grab.Size = UDim2.fromScale(1, 1)
+	grab.Text = ""
+	grab.Visible = false
+	grab.ZIndex = (frame.ZIndex or 1) + 8
+	grab.Parent = frame
+
+	local grip = Instance.new("TextButton")
+	grip.Name = "HudGrip"
+	grip.AnchorPoint = Vector2.new(1, 1)
+	grip.AutoButtonColor = false
+	grip.BackgroundColor3 = Color3.fromRGB(88, 214, 90)
+	grip.BorderSizePixel = 0
+	grip.Position = UDim2.fromScale(1, 1)
+	grip.Size = UDim2.fromOffset(32, 32)
+	grip.Text = ""
+	grip.Visible = false
+	grip.ZIndex = grab.ZIndex + 1
+	grip.Parent = frame
+	local gripCorner = Instance.new("UICorner")
+	gripCorner.CornerRadius = UDim.new(0, 6)
+	gripCorner.Parent = grip
+
+	grab.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_beginHudDrag(widget, input, "move")
+		end
+	end)
+	grip.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_beginHudDrag(widget, input, "resize")
+		end
+	end)
+
+	widget.grab = grab
+	widget.grip = grip
+end
+
+function InputController:_initHudWidgets()
+	self.hudLayout = self.hudLayout or {}
+	self.hudWidgets = {
+		shoot = {
+			id = "shoot",
+			frame = self.shootButton,
+			minW = 48,
+			minH = 48,
+			maxW = 180,
+			maxH = 180,
+			square = true,
+		},
+		split = {
+			id = "split",
+			frame = self.splitButton,
+			minW = 48,
+			minH = 48,
+			maxW = 180,
+			maxH = 180,
+			square = true,
+		},
+	}
+	for _, widget in self.hudWidgets do
+		widget.defaultAnchor = widget.frame.AnchorPoint
+		widget.defaultPosition = widget.frame.Position
+		widget.defaultSize = widget.frame.Size
+		self:_makeHudGrab(widget)
+	end
+	self:_bindHudDrag()
+end
+
+function InputController:_bindHudDrag()
+	if self.hudDragBound then
+		return
+	end
+	self.hudDragBound = true
+	UserInputService.InputChanged:Connect(function(input)
+		if not self.hudDrag then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		self:_updateHudDrag(input)
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if not self.hudDrag then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_endHudDrag()
+		end
+	end)
+end
+
+function InputController:_beginHudDrag(widget, input, mode)
+	if self.hudEditEnabled ~= true then
+		return
+	end
+	local captured = inputHudCapture(widget.frame)
+	if captured then
+		self:_applyHudLayoutEntry(widget.frame, captured, widget)
+	end
+	self.hudDrag = {
+		id = widget.id,
+		mode = mode,
+		start = Vector2.new(input.Position.X, input.Position.Y),
+		origin = widget.frame.AbsolutePosition,
+		size = widget.frame.AbsoluteSize,
+	}
+end
+
+function InputController:_updateHudDrag(input)
+	local drag = self.hudDrag
+	local widget = drag and self.hudWidgets[drag.id]
+	if not widget then
+		return
+	end
+	local frame = widget.frame
+	local parent = frame.Parent
+	if not parent then
+		return
+	end
+	local ppos = parent.AbsolutePosition
+	local psize = parent.AbsoluteSize
+	local delta = Vector2.new(input.Position.X, input.Position.Y) - drag.start
+	if drag.mode == "move" then
+		local pos = drag.origin + delta - ppos
+		local x = math.clamp(pos.X / math.max(psize.X, 1), -0.05, 0.98)
+		local y = math.clamp(pos.Y / math.max(psize.Y, 1), -0.05, 0.98)
+		frame.AnchorPoint = Vector2.new(0, 0)
+		frame.Position = UDim2.fromScale(x, y)
+	else
+		local w = math.clamp(drag.size.X + delta.X, widget.minW, widget.maxW)
+		local h = math.clamp(drag.size.Y + delta.Y, widget.minH, widget.maxH)
+		if widget.square then
+			local side = math.clamp(math.max(w, h), widget.minW, math.min(widget.maxW, widget.maxH))
+			w, h = side, side
+		end
+		frame.Size = UDim2.fromOffset(w, h)
+	end
+end
+
+function InputController:_endHudDrag()
+	local drag = self.hudDrag
+	self.hudDrag = nil
+	if not drag then
+		return
+	end
+	local widget = self.hudWidgets[drag.id]
+	if not widget then
+		return
+	end
+	local captured = inputHudCapture(widget.frame)
+	if captured then
+		self.hudLayout[widget.id] = captured
+	end
+end
+
+function InputController:setHudEditEnabled(enabled)
+	self.hudEditEnabled = enabled == true
+	if self.hudEditEnabled then
+		self:_cancelTouches()
+		self.lastTouchLayoutEnabled = nil
+		self:_layoutTouchButtons()
+	else
+		self:_endHudDrag()
+		self.lastTouchLayoutEnabled = nil
+		self:_layoutTouchButtons()
+	end
+	if self.hudWidgets then
+		for _, widget in self.hudWidgets do
+			if widget.grab then
+				widget.grab.Visible = self.hudEditEnabled
+			end
+			if widget.grip then
+				widget.grip.Visible = self.hudEditEnabled
+			end
+		end
+	end
+end
+
+function InputController:setHudLayout(layout)
+	self.hudLayout = {}
+	if typeof(layout) == "table" then
+		for id, entry in layout do
+			if (id == "shoot" or id == "split") and typeof(entry) == "table" then
+				self.hudLayout[id] = entry
+			end
+		end
+	end
+	self.lastTouchLayoutEnabled = nil
+	self:_layoutTouchButtons()
+end
+
+function InputController:getHudLayout()
+	local layout = {}
+	if not self.hudWidgets then
+		return layout
+	end
+	for id, widget in self.hudWidgets do
+		local captured = inputHudCapture(widget.frame)
+		if captured then
+			layout[id] = captured
+		elseif self.hudLayout[id] then
+			layout[id] = self.hudLayout[id]
+		end
+	end
+	return layout
+end
+
+function InputController:resetHudLayout()
+	self.hudLayout = {}
+	if self.hudWidgets then
+		for _, widget in self.hudWidgets do
+			widget.frame.AnchorPoint = widget.defaultAnchor
+			widget.frame.Position = widget.defaultPosition
+			widget.frame.Size = widget.defaultSize
+		end
+	end
+	self.lastTouchLayoutEnabled = nil
+	self:_layoutTouchButtons()
+end
+
 return InputController
 </ProtectedString>
             <string name="ScriptGuid">{06162d56-8313-4690-acc5-072cdc02239a}</string>
@@ -3230,6 +3534,7 @@ return InputController
             </Content>
             <ProtectedString name="Source">local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("Config"))
 local SkinData = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("SkinData"))
@@ -6114,6 +6419,7 @@ function Renderer:_createSocialHud()
 	self.minimap = minimap
 	self.minimapTitle = mapTitle
 	self.minimapCanvas = mapCanvas
+	self:_initHudWidgets()
 end
 
 function Renderer:setMapColors(bg: Color3, grid: Color3)
@@ -6177,7 +6483,7 @@ function Renderer:_worldMinMax()
 end
 
 function Renderer:_refreshMinimap()
-	if not self.minimapCanvas then
+	if not self.minimapCanvas or self.minimapEnabled == false then
 		return
 	end
 	local players = self.socialMapPlayers or {}
@@ -6243,6 +6549,300 @@ function Renderer:_refreshMinimap()
 	end
 end
 
+local function hudCapture(frame)
+	local parent = frame.Parent
+	if not parent then
+		return nil
+	end
+	local psize = parent.AbsoluteSize
+	local pos = frame.AbsolutePosition - parent.AbsolutePosition
+	return {
+		x = pos.X / math.max(psize.X, 1),
+		y = pos.Y / math.max(psize.Y, 1),
+		w = math.max(frame.AbsoluteSize.X, 1),
+		h = math.max(frame.AbsoluteSize.Y, 1),
+	}
+end
+
+local function hudApply(frame, layout, limits)
+	if typeof(layout) ~= "table" then
+		return
+	end
+	local minW = limits and limits.minW or 40
+	local minH = limits and limits.minH or 28
+	local maxW = limits and limits.maxW or 640
+	local maxH = limits and limits.maxH or 640
+	local w = math.clamp(tonumber(layout.w) or frame.AbsoluteSize.X, minW, maxW)
+	local h = math.clamp(tonumber(layout.h) or frame.AbsoluteSize.Y, minH, maxH)
+	if limits and limits.square then
+		local side = math.clamp(math.max(w, h), minW, math.min(maxW, maxH))
+		w, h = side, side
+	end
+	frame.AnchorPoint = Vector2.new(0, 0)
+	frame.Position = UDim2.fromScale(
+		math.clamp(tonumber(layout.x) or 0, -0.05, 1.05),
+		math.clamp(tonumber(layout.y) or 0, -0.05, 1.05)
+	)
+	frame.Size = UDim2.fromOffset(w, h)
+end
+
+function Renderer:_makeHudGrab(widget)
+	local frame = widget.frame
+	local grab = Instance.new("TextButton")
+	grab.Name = "HudGrab"
+	grab.AutoButtonColor = false
+	grab.BackgroundColor3 = Color3.fromRGB(88, 214, 90)
+	grab.BackgroundTransparency = 0.7
+	grab.BorderSizePixel = 0
+	grab.Size = UDim2.fromScale(1, 1)
+	grab.Text = ""
+	grab.Visible = false
+	grab.ZIndex = (frame.ZIndex or 1) + 8
+	grab.Parent = frame
+
+	local grip = Instance.new("TextButton")
+	grip.Name = "HudGrip"
+	grip.AnchorPoint = Vector2.new(1, 1)
+	grip.AutoButtonColor = false
+	grip.BackgroundColor3 = Color3.fromRGB(88, 214, 90)
+	grip.BorderSizePixel = 0
+	grip.Position = UDim2.fromScale(1, 1)
+	grip.Size = UDim2.fromOffset(32, 32)
+	grip.Text = ""
+	grip.Visible = false
+	grip.ZIndex = grab.ZIndex + 1
+	grip.Parent = frame
+	local gripCorner = Instance.new("UICorner")
+	gripCorner.CornerRadius = UDim.new(0, 6)
+	gripCorner.Parent = grip
+
+	grab.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_beginHudDrag(widget, input, "move")
+		end
+	end)
+	grip.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_beginHudDrag(widget, input, "resize")
+		end
+	end)
+
+	widget.grab = grab
+	widget.grip = grip
+end
+
+function Renderer:_initHudWidgets()
+	self.minimapEnabled = true
+	self.hudLayout = self.hudLayout or {}
+	self.hudWidgets = {
+		score = {
+			id = "score",
+			frame = self.scoreLabel,
+			minW = 96,
+			minH = 28,
+			maxW = 360,
+			maxH = 80,
+		},
+		ping = {
+			id = "ping",
+			frame = self.pingLabel,
+			minW = 96,
+			minH = 28,
+			maxW = 360,
+			maxH = 80,
+		},
+		leaderboard = {
+			id = "leaderboard",
+			frame = self.leaderboard,
+			minW = 140,
+			minH = 120,
+			maxW = 420,
+			maxH = 520,
+		},
+		minimap = {
+			id = "minimap",
+			frame = self.minimap,
+			minW = 110,
+			minH = 110,
+			maxW = 360,
+			maxH = 360,
+			square = true,
+		},
+	}
+	for _, widget in self.hudWidgets do
+		widget.defaultAnchor = widget.frame.AnchorPoint
+		widget.defaultPosition = widget.frame.Position
+		widget.defaultSize = widget.frame.Size
+		self:_makeHudGrab(widget)
+	end
+	self:_bindHudDrag()
+end
+
+function Renderer:_bindHudDrag()
+	if self.hudDragBound then
+		return
+	end
+	self.hudDragBound = true
+	UserInputService.InputChanged:Connect(function(input)
+		if not self.hudDrag then
+			return
+		end
+		if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+			return
+		end
+		self:_updateHudDrag(input)
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if not self.hudDrag then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			self:_endHudDrag()
+		end
+	end)
+end
+
+function Renderer:_beginHudDrag(widget, input, mode)
+	if self.hudEditEnabled ~= true then
+		return
+	end
+	local captured = hudCapture(widget.frame)
+	if captured then
+		hudApply(widget.frame, captured, widget)
+	end
+	self.hudDrag = {
+		id = widget.id,
+		mode = mode,
+		start = Vector2.new(input.Position.X, input.Position.Y),
+		origin = widget.frame.AbsolutePosition,
+		size = widget.frame.AbsoluteSize,
+	}
+end
+
+function Renderer:_updateHudDrag(input)
+	local drag = self.hudDrag
+	local widget = drag and self.hudWidgets[drag.id]
+	if not widget then
+		return
+	end
+	local frame = widget.frame
+	local parent = frame.Parent
+	if not parent then
+		return
+	end
+	local ppos = parent.AbsolutePosition
+	local psize = parent.AbsoluteSize
+	local delta = Vector2.new(input.Position.X, input.Position.Y) - drag.start
+	if drag.mode == "move" then
+		local pos = drag.origin + delta - ppos
+		local x = math.clamp(pos.X / math.max(psize.X, 1), -0.05, 0.98)
+		local y = math.clamp(pos.Y / math.max(psize.Y, 1), -0.05, 0.98)
+		frame.AnchorPoint = Vector2.new(0, 0)
+		frame.Position = UDim2.fromScale(x, y)
+	else
+		local w = math.clamp(drag.size.X + delta.X, widget.minW, widget.maxW)
+		local h = math.clamp(drag.size.Y + delta.Y, widget.minH, widget.maxH)
+		if widget.square then
+			local side = math.clamp(math.max(w, h), widget.minW, math.min(widget.maxW, widget.maxH))
+			w, h = side, side
+		end
+		frame.Size = UDim2.fromOffset(w, h)
+	end
+end
+
+function Renderer:_endHudDrag()
+	local drag = self.hudDrag
+	self.hudDrag = nil
+	if not drag then
+		return
+	end
+	local widget = self.hudWidgets[drag.id]
+	if not widget then
+		return
+	end
+	local captured = hudCapture(widget.frame)
+	if captured then
+		self.hudLayout[widget.id] = captured
+	end
+end
+
+function Renderer:setHudEditEnabled(enabled)
+	self.hudEditEnabled = enabled == true
+	if not self.hudEditEnabled then
+		self:_endHudDrag()
+	end
+	if self.hudWidgets then
+		for _, widget in self.hudWidgets do
+			local show = self.hudEditEnabled and (widget.id ~= "minimap" or self.minimapEnabled ~= false)
+			if widget.grab then
+				widget.grab.Visible = show
+			end
+			if widget.grip then
+				widget.grip.Visible = show
+			end
+		end
+	end
+end
+
+function Renderer:setMinimapEnabled(enabled)
+	self.minimapEnabled = enabled ~= false
+	if self.minimap then
+		self.minimap.Visible = self.minimapEnabled
+	end
+	if self.hudEditEnabled then
+		self:setHudEditEnabled(true)
+	end
+end
+
+function Renderer:setHudLayout(layout)
+	self.hudLayout = {}
+	if typeof(layout) == "table" then
+		for id, entry in layout do
+			if typeof(id) == "string" and typeof(entry) == "table" then
+				self.hudLayout[id] = entry
+			end
+		end
+	end
+	if not self.hudWidgets then
+		return
+	end
+	for id, widget in self.hudWidgets do
+		local entry = self.hudLayout[id]
+		if entry then
+			hudApply(widget.frame, entry, widget)
+		else
+			widget.frame.AnchorPoint = widget.defaultAnchor
+			widget.frame.Position = widget.defaultPosition
+			widget.frame.Size = widget.defaultSize
+		end
+	end
+end
+
+function Renderer:getHudLayout()
+	local layout = {}
+	if not self.hudWidgets then
+		return layout
+	end
+	for id, widget in self.hudWidgets do
+		local captured = hudCapture(widget.frame)
+		if captured then
+			layout[id] = captured
+		end
+	end
+	return layout
+end
+
+function Renderer:resetHudLayout()
+	self.hudLayout = {}
+	if not self.hudWidgets then
+		return
+	end
+	for _, widget in self.hudWidgets do
+		widget.frame.AnchorPoint = widget.defaultAnchor
+		widget.frame.Position = widget.defaultPosition
+		widget.frame.Size = widget.defaultSize
+	end
+end
 
 return Renderer
 </ProtectedString>
@@ -7063,9 +7663,9 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 	panel.Parent = gui
 	corner(panel, 16)
 
-	local title = label(panel, "AGHAAR", 28, ACCENT, true)
+	local title = label(panel, "agarZ.io", 28, ACCENT, true)
 	title.Position = UDim2.fromOffset(24, 16)
-	title.Size = UDim2.fromOffset(240, 34)
+	title.Size = UDim2.fromOffset(280, 34)
 
 	local subtitle = label(panel, "Press M to open or close anytime", 13, MUTED, false)
 	subtitle.Position = UDim2.fromOffset(24, 50)
@@ -7124,6 +7724,9 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 		pickerS = 0.35,
 		pickerV = 0.95,
 		pickerDrag = nil,
+		minimapEnabled = true,
+		hudLayout = {},
+		hudEditing = false,
 		statusLabel = nil,
 		lockLabel = nil,
 		codeBox = nil,
@@ -7136,6 +7739,7 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 	self:_buildFriendsPage()
 	self:_buildPartyPage()
 	self:_buildSettingsPage()
+	self:_buildHudEditBar()
 	self:_showTab("play")
 	self:_bindInput()
 
@@ -7203,19 +7807,16 @@ end
 
 function MainMenu:_buildPlayPage()
 	local page = self:_page("play")
-	local hint = label(page, "Play puts you in the map. Opening this menu does not save you — you can still be eaten.", 14, MUTED, false)
-	hint.Size = UDim2.new(1, 0, 0, 36)
-	hint.TextWrapped = true
 
 	local play = button(page, "Play", ACCENT)
-	play.Position = UDim2.fromOffset(0, 52)
+	play.Position = UDim2.fromOffset(0, 0)
 	play.Size = UDim2.fromOffset(180, 44)
 	play.MouseButton1Click:Connect(function()
 		self:_play()
 	end)
 
 	local spectate = button(page, "Spectate", Color3.fromRGB(200, 206, 214))
-	spectate.Position = UDim2.fromOffset(196, 52)
+	spectate.Position = UDim2.fromOffset(196, 0)
 	spectate.Size = UDim2.fromOffset(160, 44)
 	spectate.MouseButton1Click:Connect(function()
 		self:_fire({ action = "spectate" })
@@ -7223,15 +7824,22 @@ function MainMenu:_buildPlayPage()
 	self.spectateButton = spectate
 
 	self.lockLabel = label(page, "", 14, DANGER, false)
-	self.lockLabel.Position = UDim2.fromOffset(372, 60)
+	self.lockLabel.Position = UDim2.fromOffset(372, 8)
 	self.lockLabel.Size = UDim2.fromOffset(300, 28)
 
+	self.playEditHudButton = button(page, "Move &amp; resize HUD", Color3.fromRGB(200, 206, 214))
+	self.playEditHudButton.Position = UDim2.fromOffset(0, 56)
+	self.playEditHudButton.Size = UDim2.fromOffset(220, 40)
+	self.playEditHudButton.MouseButton1Click:Connect(function()
+		self:_beginHudEdit()
+	end)
+
 	local spawnTitle = label(page, "Spawn near", 16, TEXT, true)
-	spawnTitle.Position = UDim2.fromOffset(0, 116)
+	spawnTitle.Position = UDim2.fromOffset(0, 112)
 	spawnTitle.Size = UDim2.fromOffset(200, 22)
 
 	self.spawnNearToggle = button(page, "Spawn near: ON", ACCENT)
-	self.spawnNearToggle.Position = UDim2.fromOffset(0, 146)
+	self.spawnNearToggle.Position = UDim2.fromOffset(0, 142)
 	self.spawnNearToggle.Size = UDim2.fromOffset(180, 36)
 	self.spawnNearToggle.MouseButton1Click:Connect(function()
 		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
@@ -7242,8 +7850,8 @@ function MainMenu:_buildPlayPage()
 	self.spawnTargetList = Instance.new("ScrollingFrame")
 	self.spawnTargetList.BackgroundColor3 = PANEL2
 	self.spawnTargetList.BorderSizePixel = 0
-	self.spawnTargetList.Position = UDim2.fromOffset(0, 196)
-	self.spawnTargetList.Size = UDim2.new(1, 0, 1, -206)
+	self.spawnTargetList.Position = UDim2.fromOffset(0, 192)
+	self.spawnTargetList.Size = UDim2.new(1, 0, 1, -202)
 	self.spawnTargetList.ScrollBarThickness = 6
 	self.spawnTargetList.CanvasSize = UDim2.fromOffset(0, 0)
 	self.spawnTargetList.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -7259,7 +7867,7 @@ function MainMenu:_buildPlayPage()
 	pad.Parent = self.spawnTargetList
 
 	self.statusLabel = label(page, "", 14, MUTED, false)
-	self.statusLabel.Position = UDim2.fromOffset(196, 146)
+	self.statusLabel.Position = UDim2.fromOffset(196, 142)
 	self.statusLabel.Size = UDim2.new(1, -196, 0, 36)
 	self.statusLabel.TextWrapped = true
 end
@@ -7401,6 +8009,31 @@ function MainMenu:_buildSettingsPage()
 		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
 		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
 		self:_refreshPlay()
+	end)
+
+	label(right, "HUD", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+
+	self.minimapToggle = button(right, "Minimap: ON", ACCENT)
+	self.minimapToggle.Size = UDim2.new(1, 0, 0, 40)
+	self.minimapToggle.MouseButton1Click:Connect(function()
+		self.minimapEnabled = self.minimapEnabled ~= true
+		if self.renderer and self.renderer.setMinimapEnabled then
+			self.renderer:setMinimapEnabled(self.minimapEnabled)
+		end
+		self:_fire({ action = "settings", minimapEnabled = self.minimapEnabled == true })
+		self:_refreshSettings()
+	end)
+
+	self.settingsEditHudButton = button(right, "Move &amp; resize HUD", Color3.fromRGB(200, 206, 214))
+	self.settingsEditHudButton.Size = UDim2.new(1, 0, 0, 40)
+	self.settingsEditHudButton.MouseButton1Click:Connect(function()
+		self:_beginHudEdit()
+	end)
+
+	self.resetHudButton = button(right, "Reset HUD layout", Color3.fromRGB(200, 206, 214))
+	self.resetHudButton.Size = UDim2.new(1, 0, 0, 40)
+	self.resetHudButton.MouseButton1Click:Connect(function()
+		self:_resetHudLayout()
 	end)
 end
 
@@ -7652,6 +8285,103 @@ function MainMenu:_row(parent, text, actions)
 	return row
 end
 
+function MainMenu:_buildHudEditBar()
+	local bar = Instance.new("Frame")
+	bar.Name = "HudEditBar"
+	bar.AnchorPoint = Vector2.new(0.5, 0)
+	bar.BackgroundColor3 = PANEL
+	bar.BorderSizePixel = 0
+	bar.Position = UDim2.new(0.5, 0, 0, 10)
+	bar.Size = UDim2.new(1, -20, 0, 58)
+	bar.Visible = false
+	bar.ZIndex = 40
+	bar.Parent = self.gui
+	corner(bar, 12)
+	self.editBar = bar
+
+	local hint = label(bar, "Drag to move · corner square to resize", 14, TEXT, true)
+	hint.Position = UDim2.fromOffset(16, 8)
+	hint.Size = UDim2.new(1, -150, 0, 42)
+	hint.TextWrapped = true
+
+	local done = button(bar, "Done", ACCENT)
+	done.AnchorPoint = Vector2.new(1, 0.5)
+	done.Position = UDim2.new(1, -12, 0.5, 0)
+	done.Size = UDim2.fromOffset(110, 40)
+	done.MouseButton1Click:Connect(function()
+		self:_endHudEdit(true)
+	end)
+end
+
+function MainMenu:_hudLayoutPayload()
+	local layout = {}
+	if self.renderer and self.renderer.getHudLayout then
+		for id, entry in self.renderer:getHudLayout() do
+			layout[id] = entry
+		end
+	end
+	if self.input and self.input.getHudLayout then
+		for id, entry in self.input:getHudLayout() do
+			layout[id] = entry
+		end
+	end
+	return layout
+end
+
+function MainMenu:_beginHudEdit()
+	self.hudEditing = true
+	self.hudEditReturnTab = self.tab
+	self.dim.Visible = false
+	self.panel.Visible = false
+	if self.editBar then
+		self.editBar.Visible = true
+	end
+	if self.renderer then
+		self.renderer.mainMenuOpen = false
+		if self.renderer.setHudEditEnabled then
+			self.renderer:setHudEditEnabled(true)
+		end
+	end
+	if self.input and self.input.setHudEditEnabled then
+		self.input:setHudEditEnabled(true)
+	end
+end
+
+function MainMenu:_endHudEdit(save)
+	self.hudEditing = false
+	if self.editBar then
+		self.editBar.Visible = false
+	end
+	if self.renderer and self.renderer.setHudEditEnabled then
+		self.renderer:setHudEditEnabled(false)
+	end
+	if self.input and self.input.setHudEditEnabled then
+		self.input:setHudEditEnabled(false)
+	end
+	if save then
+		local layout = self:_hudLayoutPayload()
+		self.hudLayout = layout
+		self:_fire({
+			action = "settings",
+			hudLayout = layout,
+			minimapEnabled = self.minimapEnabled ~= false,
+		})
+	end
+	self:setOpen(true)
+	self:_showTab(self.hudEditReturnTab or "settings")
+end
+
+function MainMenu:_resetHudLayout()
+	self.hudLayout = {}
+	if self.renderer and self.renderer.resetHudLayout then
+		self.renderer:resetHudLayout()
+	end
+	if self.input and self.input.resetHudLayout then
+		self.input:resetHudLayout()
+	end
+	self:_fire({ action = "settings", hudLayout = {} })
+end
+
 function MainMenu:_fire(payload)
 	if self.remote then
 		self.remote:FireServer(payload)
@@ -7699,6 +8429,10 @@ function MainMenu:_bindInput()
 			return
 		end
 		if input.KeyCode == (self.keybinds.menu or Enum.KeyCode.M) then
+			if self.hudEditing then
+				self:_endHudEdit(true)
+				return
+			end
 			self:setOpen(not self.open)
 		end
 	end)
@@ -7738,7 +8472,7 @@ function MainMenu:setOpen(open)
 end
 
 function MainMenu:isCapturing()
-	return self.capturingBind ~= nil
+	return self.capturingBind ~= nil or self.hudEditing == true
 end
 
 function MainMenu:handleUpdate(payload)
@@ -7755,6 +8489,21 @@ function MainMenu:handleUpdate(payload)
 		end
 		if typeof(payload.spawnNearEnabled) == "boolean" then
 			self.social.spawnNearEnabled = payload.spawnNearEnabled
+		end
+		if typeof(payload.minimapEnabled) == "boolean" then
+			self.minimapEnabled = payload.minimapEnabled
+			if self.renderer and self.renderer.setMinimapEnabled then
+				self.renderer:setMinimapEnabled(self.minimapEnabled)
+			end
+		end
+		if payload.kind == "hello" and typeof(payload.hudLayout) == "table" then
+			self.hudLayout = payload.hudLayout
+			if self.renderer and self.renderer.setHudLayout then
+				self.renderer:setHudLayout(payload.hudLayout)
+			end
+			if self.input and self.input.setHudLayout then
+				self.input:setHudLayout(payload.hudLayout)
+			end
 		end
 		if typeof(payload.friends) == "table" then
 			self.social.friends = payload.friends
@@ -7988,6 +8737,11 @@ function MainMenu:_refreshSettings()
 		else
 			b.Text = keyName(self.keybinds[id])
 		end
+	end
+	if self.minimapToggle then
+		local on = self.minimapEnabled ~= false
+		self.minimapToggle.Text = if on then "Minimap: ON" else "Minimap: OFF"
+		self.minimapToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
 	end
 	if self.mapLightButton then
 		local selected = Color3.fromRGB(16, 20, 24)
@@ -10901,6 +11655,33 @@ local function normaliseFriends(value)
 	return friends
 end
 
+local HUD_LAYOUT_KEYS = {
+	score = true,
+	ping = true,
+	leaderboard = true,
+	minimap = true,
+	shoot = true,
+	split = true,
+}
+
+local function sanitiseHudLayout(value)
+	if type(value) ~= "table" then
+		return nil
+	end
+	local layout = {}
+	for key, entry in value do
+		if HUD_LAYOUT_KEYS[key] and type(entry) == "table" then
+			layout[key] = {
+				x = math.clamp(tonumber(entry.x) or 0, -0.05, 1.05),
+				y = math.clamp(tonumber(entry.y) or 0, -0.05, 1.05),
+				w = math.clamp(tonumber(entry.w) or 80, 40, 640),
+				h = math.clamp(tonumber(entry.h) or 40, 28, 640),
+			}
+		end
+	end
+	return layout
+end
+
 function GameService.new()
 	local self = setmetatable({}, GameService)
 	self.remotes = self:_ensureRemotes()
@@ -11515,6 +12296,8 @@ function GameService:_addPlayer(player: Player)
 		incomingRequests = {},
 		outgoingRequests = {},
 		spawnNearEnabled = true,
+		minimapEnabled = true,
+		hudLayout = nil,
 		partyId = nil,
 		pendingPartyId = nil,
 		spectateUnlockAt = 0,
@@ -11629,6 +12412,8 @@ function GameService:_loadPlayerInfo(state)
 	state.useLocaleSkin = data.useLocaleSkin ~= false
 	state.friends = normaliseFriends(data.friends)
 	state.spawnNearEnabled = data.spawnNearEnabled ~= false
+	state.minimapEnabled = data.minimapEnabled ~= false
+	state.hudLayout = sanitiseHudLayout(data.hudLayout)
 	state.keybinds = if type(data.keybinds) == "table" then data.keybinds else nil
 	state.mapColor = if type(data.mapColor) == "table" then data.mapColor else nil
 	state.gridColor = if type(data.gridColor) == "table" then data.gridColor else nil
@@ -11756,6 +12541,8 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 		}
 	end
 	local spawnNearEnabled = state.spawnNearEnabled ~= false
+	local minimapEnabled = state.minimapEnabled ~= false
+	local hudLayout = state.hudLayout
 	local keybinds = state.keybinds
 	local mapColor = state.mapColor
 	local gridColor = state.gridColor
@@ -11779,6 +12566,8 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 			info.useLocaleSkin = useLocaleSkin
 			info.friends = friendsPayload
 			info.spawnNearEnabled = spawnNearEnabled
+			info.minimapEnabled = minimapEnabled
+			info.hudLayout = hudLayout
 			info.keybinds = keybinds
 			info.mapColor = mapColor
 			info.gridColor = gridColor
@@ -16180,6 +16969,8 @@ function GameService:_socialPayload(state)
 		playing = state.playing == true and self:_isPlaying(state),
 		spectateUnlockIn = math.max((state.spectateUnlockAt or 0) - now, 0),
 		spawnNearEnabled = state.spawnNearEnabled ~= false,
+		minimapEnabled = state.minimapEnabled ~= false,
+		hudLayout = state.hudLayout or {},
 		friends = friends,
 		incoming = incoming,
 		outgoing = outgoing,
@@ -16449,6 +17240,12 @@ function GameService:_handleSocialAction(player: Player, payload)
 	elseif action == "settings" then
 		if typeof(payload.spawnNearEnabled) == "boolean" then
 			state.spawnNearEnabled = payload.spawnNearEnabled
+		end
+		if typeof(payload.minimapEnabled) == "boolean" then
+			state.minimapEnabled = payload.minimapEnabled
+		end
+		if typeof(payload.hudLayout) == "table" then
+			state.hudLayout = sanitiseHudLayout(payload.hudLayout)
 		end
 		if typeof(payload.keybinds) == "table" then
 			local binds = {}
