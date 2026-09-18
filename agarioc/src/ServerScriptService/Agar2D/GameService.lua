@@ -4437,6 +4437,39 @@ function GameService:_bumpVirusesFromEjected()
 	end
 end
 
+function GameService:_nearMergeSiblingForVirusBurst(cell)
+	local state = cell.owner
+	if not state or #state.cells ~= 2 then
+		return nil
+	end
+
+	local sibling
+	for _, id in state.cells do
+		if id ~= cell.id then
+			sibling = self.cells[id]
+			break
+		end
+	end
+	if not sibling then
+		return nil
+	end
+
+	local now = os.clock()
+	local mergeReadyAt = math.max(cell.canRecombineAt or now, sibling.canRecombineAt or now)
+	local mergeWindow = math.max(Config.Virus.NearMergeWindowSeconds or 1, 0)
+	if mergeReadyAt > now + mergeWindow then
+		return nil
+	end
+
+	local distanceScale = math.max(Config.Virus.NearMergeDistanceScale or 1.25, 1)
+	local nearDistance = (cell.radius + sibling.radius) * distanceScale
+	if Vec2.distanceSquared(cell.pos, sibling.pos) > nearDistance * nearDistance then
+		return nil
+	end
+
+	return sibling
+end
+
 function GameService:_consumeBurstObject(cell, bonusMass: number?, source: string?): boolean
 	-- Virus.SplitOnEat = false: absorb the mass without bursting the
 	-- cell into pieces. Prevents the "auto-split" the player didn't ask
@@ -4449,7 +4482,28 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 		return true
 	end
 
-	if self:_burstCell(cell) then
+	local nearMergeSibling = if source == "virus"
+		then self:_nearMergeSiblingForVirusBurst(cell)
+		else nil
+	local didBurst, burstChildren = self:_burstCell(cell)
+	if didBurst then
+		if nearMergeSibling and self.cells[nearMergeSibling.id] and burstChildren then
+			table.sort(burstChildren, function(a, b)
+				return Vec2.distanceSquared(a.pos, nearMergeSibling.pos)
+					< Vec2.distanceSquared(b.pos, nearMergeSibling.pos)
+			end)
+			local consumeCount = math.min(
+				math.max(math.floor(Config.Virus.NearMergeCannibalizePieces or 3), 0),
+				#burstChildren
+			)
+			for i = 1, consumeCount do
+				local child = burstChildren[i]
+				if self.cells[child.id] then
+					self:_setCellMass(nearMergeSibling, nearMergeSibling.mass + child.mass)
+					self:_removeCell(child, nearMergeSibling.id)
+				end
+			end
+		end
 		return true
 	end
 
@@ -4464,7 +4518,7 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 	return false
 end
 
-function GameService:_burstCell(cell): boolean
+function GameService:_burstCell(cell): (boolean, {any}?)
 	local state = cell.owner
 	local freeSlots = Config.Player.MaxCells - #state.cells
 	if freeSlots <= 0 then
@@ -4482,6 +4536,7 @@ function GameService:_burstCell(cell): boolean
 	self:_setCellMass(cell, massPerPiece)
 	cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 	cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	local children = {}
 
 	for i = 1, pieces - 1 do
 		local dir = Vec2.fromAngle((math.pi * 2) * (i / (pieces - 1)))
@@ -4500,10 +4555,11 @@ function GameService:_burstCell(cell): boolean
 		)
 		if child then
 			child.sweptEatStartPos = cell.pos
+			children[#children + 1] = child
 		end
 	end
 
-	return true
+	return true, children
 end
 
 function GameService:_updatePlayerCenters()

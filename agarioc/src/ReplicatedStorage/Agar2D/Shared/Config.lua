@@ -72,12 +72,12 @@ Config.Cell = {
 	RecombineSeconds = 12, -- legacy fallback; see RecombineMin/Max below
 	-- Mass-scaled recombine: small cells merge back quickly, big cells wait.
 	-- Formula: clamp(Min + (mass / ScaleMass) * PerScaleMass, Min, Max).
-	RecombineMinSeconds = 1.5, -- floor for very small cells
-	RecombineMaxSeconds = 5, -- cap; even the biggest cells wait at most this long
+	RecombineMinSeconds = 2, -- floor for very small cells
+	RecombineMaxSeconds = 8, -- cap for the biggest cells
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 500,
+	SplitImpulse = 700,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SplitInheritedBoostScale = 0.65,
@@ -154,7 +154,7 @@ Config.Cell = {
 	-- Set CannibalizeEnabled = false to turn the mechanic off entirely.
 	-- ==================================================================
 	CannibalizeEnabled = true,
-	CannibalizeSecondsSinceSplit = 5.0, -- was 2.0; wait past recombine window
+	CannibalizeSecondsSinceSplit = 8,
 	CannibalizeMassRatio = 4.0,         -- was 2.0; require a real size gap
 	CannibalizeOverlap = 0.85,
 }
@@ -208,6 +208,9 @@ Config.Virus = {
 	-- At the cap, the virus is absorbed and its mass is gained instead.
 	SplitOnEat = true,
 	MaxBurstPieces = 8,
+	NearMergeWindowSeconds = 1,
+	NearMergeDistanceScale = 1.25,
+	NearMergeCannibalizePieces = 3,
 	BumpVelocityTransfer = 0.7,
 	BumpMinSpeed = 140,
 	BumpMaxSpeed = 300,
@@ -328,10 +331,10 @@ Config.Ejected = {
 	-- MinScale = 1 so the receiving cell always gets the full transfer.
 	SelfRecoveryStartScore = 400000,
 	SelfRecoveryEndScore = 2400000,
-	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
+	SelfRecoveryMinScale = 0.5,
 	SelfRecoveryCurveExponent = 0.7,
 	Speed = 200,
-	DragPerSecond = 0.9,
+	DragPerSecond = 2,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
