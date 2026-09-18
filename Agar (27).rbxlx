@@ -3576,10 +3576,6 @@ local function displayScore(mass: number): string
 	return tostring(math.floor(mass + 0.5))
 end
 
-local function massToRadius(mass: number): number
-	return math.sqrt(math.max(mass or 1, 1)) * (Config.Cell.RadiusScale or 0.78)
-end
-
 local function normaliseAvatarDisplayMode(value): string
 	if value == "face" or value == "bust" or value == "fullBody" or value == "hidden" then
 		return value
@@ -4704,9 +4700,7 @@ function Renderer:_clearMergeVisualHold(eater)
 	eater.mergeHoldMass = nil
 	eater.mergeGoalRadius = nil
 	eater.mergeGoalMass = nil
-	eater.mergeVisualRadius = nil
 	eater.mergePending = nil
-	eater.mergeEdgeExcited = nil
 	eater.visualMass = nil
 end
 
@@ -4717,7 +4711,6 @@ function Renderer:_beginMergeVisualHold(eater)
 	if eater.mergeHoldRadius == nil then
 		eater.mergeHoldRadius = eater.radius
 		eater.mergeHoldMass = eater.mass
-		eater.mergeVisualRadius = eater.radius
 		eater.visualMass = eater.mass
 	end
 	eater.mergePending = true
@@ -4727,78 +4720,39 @@ function Renderer:_beginMergeVisualHold(eater)
 	eater.radiusVelocity = 0
 end
 
-function Renderer:_mergeStackProgress(prey, eater): number
+function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	if not prey or not eater then
-		return 0
+		return false
 	end
 	local eaterPos = eater.displayPos or eater.targetPos
 	local preyPos = prey.displayPos or prey.targetPos
 	if typeof(eaterPos) ~= "Vector2" or typeof(preyPos) ~= "Vector2" then
-		return 0
+		return false
 	end
-	-- Mass transfers once the swallowed cell's center is inside the eater
-	-- as it looked when this swallow started — not when they first touch.
+	-- Same swallow path as before; mass pops only once the swallowed
+	-- cell's center is clearly inside the eater it started sliding into.
 	local remainingDist = (preyPos - eaterPos).Magnitude
 	local underRadius = math.max(prey.consumeEaterStartRadius or eater.mergeHoldRadius or eater.radius or 1, 1)
-	local stackT = 1 - math.clamp(remainingDist / (underRadius * 0.9), 0, 1)
-	return stackT * stackT * stackT * (stackT * (stackT * 6 - 15) + 10)
+	return remainingDist &lt;= underRadius * 0.5
 end
 
-function Renderer:_refreshMergeVisual(eater)
+function Renderer:_snapHeldMergeMass(eater)
 	if not eater or eater.mergeHoldRadius == nil then
 		return
-	end
-	local visualMass = eater.mergeHoldMass
-	if typeof(visualMass) ~= "number" then
-		visualMass = eater.mass or 1
-	end
-	local maxGrow = 0
-	for _, other in self.cellStates do
-		if other.consumeTarget == eater and other.consumeIsMerge == true and other.consumeFade ~= true then
-			local grow = self:_mergeStackProgress(other, eater)
-			maxGrow = math.max(maxGrow, grow)
-			visualMass += (other.consumeMass or 0) * grow
-		end
-	end
-	eater.visualMass = visualMass
-	eater.mergeVisualRadius = massToRadius(visualMass)
-	eater.radius = eater.mergeVisualRadius
-	eater.radiusVelocity = 0
-	if maxGrow &gt; 0.08 and eater.mergeEdgeExcited ~= true then
-		eater.mergeEdgeExcited = true
-		self:_exciteLiquidEdge(eater, os.clock(), 0.8)
-	end
-end
-
-function Renderer:_settleConsumedMergeMass(prey, eater)
-	if not prey or not eater or eater.mergeHoldRadius == nil then
-		return
-	end
-	local add = prey.consumeMass or 0
-	if add &gt; 0 then
-		eater.mergeHoldMass = (eater.mergeHoldMass or eater.mass or 0) + add
-		eater.mergeHoldRadius = massToRadius(eater.mergeHoldMass)
-		eater.visualMass = eater.mergeHoldMass
-		eater.mergeVisualRadius = eater.mergeHoldRadius
-		eater.radius = eater.mergeHoldRadius
-	end
-end
-
-function Renderer:_finishMergeVisualHoldIfIdle(eater)
-	if not eater or eater.mergeHoldRadius == nil then
-		return
-	end
-	for _, other in self.cellStates do
-		if other.consumeTarget == eater and other.consumeIsMerge == true and other.consumeFade ~= true and other.consumeUntil then
-			self:_refreshMergeVisual(eater)
-			return
-		end
 	end
 	local goalRadius = eater.mergeGoalRadius or eater.targetRadius
+	local fromRadius = eater.mergeHoldRadius or eater.radius
 	if typeof(goalRadius) == "number" then
-		eater.radius = goalRadius
+		local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
+		eater.radius = fromRadius + (goalRadius - fromRadius) * pop
+		eater.targetRadius = goalRadius
+		eater.radiusVelocity = 0
+		eater.feedGrow = false
+		eater.feedSlices = nil
+		eater.feedGoalRadius = nil
 	end
-	eater.radiusVelocity = 0
+	eater.visualMass = eater.mergeGoalMass or eater.mass
+	self:_exciteLiquidEdge(eater, os.clock(), 0.8)
 	self:_clearMergeVisualHold(eater)
 end
 
@@ -5592,7 +5546,7 @@ end
 
 function Renderer:_stepCellRadius(state, dt: number)
 	if state.mergeHoldRadius ~= nil then
-		state.radius = state.mergeVisualRadius or state.mergeHoldRadius
+		state.radius = state.mergeHoldRadius
 		state.radiusVelocity = 0
 		return
 	end
@@ -5813,7 +5767,9 @@ function Renderer:_stepEntityStates(states, dt: number)
 				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
 				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
-				self:_refreshMergeVisual(target)
+				if self:_mergePreyIsUnder(state, target) then
+					self:_snapHeldMergeMass(target)
+				end
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
@@ -5825,8 +5781,7 @@ function Renderer:_stepEntityStates(states, dt: number)
 				states[id] = nil
 				self.cellPool:release(id)
 				if wasMerge then
-					self:_settleConsumedMergeMass(state, consumeTarget)
-					self:_finishMergeVisualHoldIfIdle(consumeTarget)
+					self:_snapHeldMergeMass(consumeTarget)
 				end
 			end
 			continue
@@ -6142,9 +6097,10 @@ function Renderer:_updateCameraOwnRadius()
 			and state.consumeFade ~= true
 			and state.consumeTarget
 			and state.consumeTarget.isOwn
+			and state.consumeTarget.mergeHoldRadius ~= nil
 		then
-			-- Keep swallowed own cells in the zoom sum until they disappear,
-			-- otherwise the camera dives in before the eater visually grows.
+			-- Until the delayed pop, keep the swallowed cell in the zoom sum
+			-- so holding size does not dive the camera in.
 			sum += state.radius
 			hasOwn = true
 		end
