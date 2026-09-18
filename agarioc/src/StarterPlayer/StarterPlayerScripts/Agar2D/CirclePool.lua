@@ -40,14 +40,48 @@ local function ensureSerrations(frame: Frame, parts)
 		tooth.AnchorPoint = Vector2.new(0.5, 0.5)
 		tooth.BorderSizePixel = 0
 		tooth.Position = UDim2.fromScale(
-			0.5 + math.cos(angle) * 0.43,
-			0.5 + math.sin(angle) * 0.43
+			0.5 + math.cos(angle) * 0.48,
+			0.5 + math.sin(angle) * 0.48
 		)
 		tooth.Rotation = math.deg(angle) + 45
-		tooth.Size = UDim2.fromScale(0.18, 0.18)
+		tooth.Size = UDim2.fromScale(0.2, 0.2)
 		tooth.Visible = false
 		tooth.Parent = frame
 		parts.serrations[index] = tooth
+	end
+end
+
+local function ensureLiquidRipples(frame: Frame, parts)
+	if parts.liquidRipples then
+		return
+	end
+
+	parts.liquidRipples = {}
+	for index = 1, 3 do
+		local ring = Instance.new("Frame")
+		ring.Name = "LiquidRipple"
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		ring.BackgroundTransparency = 1
+		ring.BorderSizePixel = 0
+		ring.Position = UDim2.fromScale(0.5, 0.5)
+		ring.Size = UDim2.fromScale(1, 1)
+		ring.Visible = false
+		ring.Parent = frame
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = ring
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(255, 255, 255)
+		stroke.Thickness = 1.5
+		stroke.Transparency = 1
+		stroke.Parent = ring
+
+		parts.liquidRipples[index] = {
+			frame = ring,
+			stroke = stroke,
+		}
 	end
 end
 
@@ -57,6 +91,7 @@ local function resetFrame(frame: Frame, parts)
 	frame.BackgroundTransparency = 0
 	frame.Position = UDim2.fromOffset(-100000, -100000)
 	frame.Size = UDim2.fromOffset(1, 1)
+	frame.Rotation = 0
 	parts.lastZIndex = nil
 
 	if parts.frameCorner then
@@ -65,6 +100,8 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.skin then
 		parts.skin.Visible = false
+		parts.skin.Rotation = 0
+		parts.skin.ScaleType = Enum.ScaleType.Crop
 		parts.skin.Image = ""
 		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.skin.ImageTransparency = 0
@@ -77,6 +114,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.avatar then
 		parts.avatar.Visible = false
+		parts.avatar.Rotation = 0
 		parts.avatar.Image = ""
 		parts.avatar.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.avatar.ImageTransparency = 0
@@ -90,10 +128,16 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.labelStack then
 		parts.labelStack.Visible = false
+		parts.labelStack.Rotation = 0
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
 			tooth.Visible = false
+		end
+	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.Visible = false
 		end
 	end
 end
@@ -121,7 +165,12 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
-			tooth.ZIndex = zIndex + 1
+			tooth.ZIndex = zIndex
+		end
+	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.ZIndex = zIndex + 3
 		end
 	end
 end
@@ -130,7 +179,8 @@ local function makeCircle(parent: Instance, zIndex: number)
 	local frame = Instance.new("Frame")
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.BorderSizePixel = 0
-	frame.ClipsDescendants = true
+	-- Serration teeth extend beyond the circular body.
+	frame.ClipsDescendants = false
 	frame.ZIndex = zIndex
 	frame.Visible = false
 	frame.Parent = parent
@@ -271,6 +321,9 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	if options and options.serrated then
 		ensureSerrations(frame, parts)
 	end
+	if options and options.liquidRippleProgress then
+		ensureLiquidRipples(frame, parts)
+	end
 	local zIndex = options and options.zIndex or self.zIndex
 	applyZIndex(frame, parts, zIndex)
 	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
@@ -282,6 +335,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	frame.Position = UDim2.fromOffset(x, y)
 	frame.Size = UDim2.fromOffset(width, height)
+	setCached(parts, "frameRotation", frame, "Rotation", 0)
 
 	if parts.stroke then
 		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
@@ -301,6 +355,8 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 
 	if options then
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -313,6 +369,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			local overlayScale = options.overlayScale or 1
 			local overlaySize = if overlayScale < 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
@@ -334,6 +391,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius >= 18)
 			if parts.nameLabel then
 				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
@@ -344,12 +402,15 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 	else
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", false)
 			setCached(parts, "skinImage", parts.skin, "Image", "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
 			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", 0)
 		end
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
 			setCached(parts, "avatarImage", parts.avatar, "Image", "")
 			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", Color3.fromRGB(255, 255, 255))
@@ -357,7 +418,31 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", Enum.ScaleType.Crop)
 		end
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
+		end
+	end
+
+	if parts.liquidRipples then
+		local progress = options and options.liquidRippleProgress
+		local depth = math.clamp(options and options.liquidRippleDepth or 0.18, 0, 0.5)
+		for index, ripple in parts.liquidRipples do
+			local delay = (index - 1) * 0.14
+			local waveProgress = if progress then (progress - delay) / math.max(1 - delay, 0.01) else -1
+			local visible = waveProgress >= 0 and waveProgress < 1
+			setCached(parts, "liquidVisible" .. index, ripple.frame, "Visible", visible)
+			if visible then
+				waveProgress = math.clamp(waveProgress, 0, 1)
+				local sizeScale = 1 - depth * waveProgress
+				ripple.frame.Size = UDim2.fromScale(sizeScale, sizeScale)
+				setCached(
+					parts,
+					"liquidTransparency" .. index,
+					ripple.stroke,
+					"Transparency",
+					0.18 + waveProgress * 0.82
+				)
+			end
 		end
 	end
 

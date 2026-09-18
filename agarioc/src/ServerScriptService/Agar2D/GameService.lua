@@ -86,6 +86,14 @@ local function splitAimForState(state): Vector2
 	return Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
 end
 
+local function splitAimForCell(state, cell): Vector2
+	local fallback = splitAimForState(state)
+	if state.input.target then
+		return Vec2.safeUnit(state.input.target - cell.pos, fallback)
+	end
+	return fallback
+end
+
 -- Mass-scaled merge cooldown. Formula per Config.Cell comments:
 --   clamp(RecombineMinSeconds + (mass / RecombineScaleMass) * RecombinePerScaleMass,
 --         RecombineMinSeconds, RecombineMaxSeconds)
@@ -290,6 +298,14 @@ local function ejectedTouchPickupDistance(collector, ejected): number
 	-- Padding remains available as a small inward/outward tuning offset.
 	local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 	local padding = Config.Ejected.TouchPickupPadding or 0
+	if ejected.targetCellId == collector.id
+		and ejected.ownerUserId == collector.ownerUserId
+	then
+		-- A locked self-feed pellet is considered received when its center
+		-- enters the intended cell. This remains visually contained while
+		-- avoiding misses on very small, moving receivers.
+		return math.max(collector.radius + padding, 0)
+	end
 	return math.max(collector.radius - ejected.radius * coverage + padding, 0)
 end
 
@@ -300,7 +316,32 @@ local function canCollectEjected(collector, ejected): boolean
 	end
 
 	local collectDistance = ejectedTouchPickupDistance(collector, ejected)
-	return Vec2.distanceSquared(collector.pos, ejected.pos) <= collectDistance * collectDistance
+	if collectDistance <= 0 then
+		return false
+	end
+	if Vec2.distanceSquared(collector.pos, ejected.pos) <= collectDistance * collectDistance then
+		return true
+	end
+	local previousPos = ejected.previousPos
+	if not previousPos then
+		return false
+	end
+	local travel = ejected.pos - previousPos
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared <= 0.000001 then
+		return false
+	end
+	local t = math.clamp((collector.pos - previousPos):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previousPos + travel * t
+	return Vec2.distanceSquared(collector.pos, closest) <= collectDistance * collectDistance
+end
+
+local function ejectedCostForCell(cell): number
+	local config = Config.Ejected
+	if cell.owner and cell.owner.frozen then
+		return math.max(config.FrozenCost or config.Cost or 0, 0)
+	end
+	return math.max(config.Cost or 0, 0)
 end
 
 local function canCellFireEjected(cell): boolean
@@ -309,7 +350,7 @@ local function canCellFireEjected(cell): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = ejectedCostForCell(cell)
 	return cost <= 0 or cell.mass > cost
 end
 
@@ -844,6 +885,12 @@ function GameService:_handleConfigUpdate(player: Player, payload)
 				end
 			end
 		end
+	end
+	if Config.Player.MinSpeed > Config.Player.BaseSpeed then
+		-- Keep live speed edits safe for math.clamp and preserve the meaning
+		-- of BaseSpeed as the small-cell maximum.
+		Config.Player.MinSpeed = Config.Player.BaseSpeed
+		applied["Player.MinSpeed"] = Config.Player.MinSpeed
 	end
 	if next(applied) ~= nil and self.remotes and self.remotes.ConfigUpdate then
 		self.remotes.ConfigUpdate:FireAllClients({ kind = "sync", values = applied })
@@ -1729,7 +1776,15 @@ function GameService:_spawnBarrier(pos: Vector2?)
 	}
 end
 
-function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: number, sourceCellId: number?, targetCellId: number?)
+function GameService:_spawnEjected(
+	pos: Vector2,
+	dir: Vector2,
+	ownerUserId: number,
+	sourceCellId: number?,
+	targetCellId: number?,
+	pickupMultiplier: number?,
+	inheritedVelocity: Vector2?
+)
 	self:_trimOwnerEjected(ownerUserId)
 	if self.ejectedCount >= Config.Ejected.MaxCount then
 		return
@@ -1752,8 +1807,9 @@ function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: numb
 		targetCellId = targetCellId,
 		colorPayload = owner and owner.colorPayload or colorToPayload(Config.Render.EjectedColor),
 		pos = self:_clampToWorld(pos, Config.Ejected.Radius),
-		vel = dir * Config.Ejected.Speed,
+		vel = dir * Config.Ejected.Speed + (inheritedVelocity or Vector2.zero),
 		mass = Config.Ejected.Mass,
+		pickupMultiplier = math.max(pickupMultiplier or 1, 1),
 		radius = Config.Ejected.Radius,
 		spawnedAt = os.clock(),
 	}
@@ -1955,7 +2011,9 @@ local function ownCellMayCollectOwnEjected(cell, ejected, now: number): boolean
 end
 
 function GameService:_ejectedMassGain(cell, ejected, gainContext: string?): number
-	local baseGain = ejected.mass * math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+	local baseGain = ejected.mass
+		* math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+		* math.max(ejected.pickupMultiplier or 1, 1)
 	if gainContext ~= "selfFeed" or ejected.ownerUserId ~= cell.ownerUserId then
 		return baseGain
 	end
@@ -2747,18 +2805,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R: split the biggest eligible cell into 4 total pieces.
+		-- R: run three full Space-style split generations.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.DoubleSplitPieces or 4)
+			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
 		end
 
-		-- E: split the biggest eligible cell into 3 total pieces.
+		-- E: run two full split generations.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.TripleSplitPieces or 3)
+			self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner => cells skip
@@ -2811,26 +2869,23 @@ function GameService:_splitPlayer(state)
 		end
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for index, cell in eligible do
-		local laneRatio = if #eligible > 1 then (index - 1) / (#eligible - 1) - 0.5 else 0
-		local dir = rotateDirection(baseAim, laneRatio * groupSpread)
+	for _, cell in eligible do
+		local dir = splitAimForCell(state, cell)
 		local childMass = cell.mass * 0.5
 		self:_setCellMass(cell, childMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 		local childRadius = massToRadius(childMass)
-		-- If frozen, spawn the child with zero velocity but nudge it
-		-- a short distance along aim so the group has a direction
-		-- (not stacked on one point). Cells still stay bunched close.
-		-- Non-frozen: normal outward launch.
+		-- Frozen cells do not move, but retain a reduced paused launch
+		-- that resumes when freeze is released.
 		local childVelocity = if state.frozen
-			then Vector2.zero
+			then self:_splitLaunchBoost(cell, dir, childMass)
+				* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			spawnPos = self:_clampToWorld(cell.pos, childRadius)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
@@ -2863,9 +2918,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		return
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for cellIndex, cell in cells do
+	for _, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
 		if freeSlots <= 0 then
 			break
@@ -2884,8 +2937,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local laneRatio = if #cells > 1 then (cellIndex - 1) / (#cells - 1) - 0.5 else 0
-		local aim = rotateDirection(baseAim, laneRatio * groupSpread)
+		local aim = splitAimForCell(state, cell)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -2903,8 +2955,10 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local childVelocity
 			local spawnPos
 			if state.frozen then
-				childVelocity = Vector2.zero
-				spawnPos = self:_clampToWorld(cell.pos, pieceRadius)
+				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
+					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -2925,82 +2979,21 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 	end
 end
 
-function GameService:_multiSplitBiggest(state, totalPieces: number)
-	-- Splits the biggest eligible cell into `totalPieces` equal pieces
-	-- (parent keeps 1/totalPieces of its mass, and (totalPieces - 1)
-	-- children spawn along aim, fanned slightly). Respects the 32-cell
-	-- cap and the SplitMinMass per-piece minimum. Kept for callers that
-	-- still want single-cell behavior; Q/E now use _splitEveryCellIntoN.
-	totalPieces = math.max(math.floor(totalPieces), 2)
-	local cells = self:_sortedPlayerCells(state)
-	local biggest = cells[1]
-	if not biggest then
-		return
-	end
-
-	local freeSlots = Config.Player.MaxCells - #state.cells
-	if freeSlots <= 0 then
-		return
-	end
-
-	local minPiece = math.max(Config.Cell.SplitMinMass or 1, 1)
-	local piecesAllowedByMass = math.max(math.floor(biggest.mass / minPiece), 1)
-	local pieces = math.min(totalPieces, freeSlots + 1, piecesAllowedByMass)
-	if pieces < 2 then
-		return
-	end
-
-	local newChildren = pieces - 1
-	local pieceMass = biggest.mass / pieces
-	local pieceRadius = massToRadius(pieceMass)
-	local aim = splitAimForState(state)
-
-	self:_setCellMass(biggest, pieceMass)
-	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
-	biggest.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
-
-	for i = 1, newChildren do
-		-- Tight fan across aim so children fly nearly straight. Config
-		-- knob Cell.MultiSplitFanRadians controls the total spread; 0
-		-- fires everything exactly on aim.
-		local fanSpread = math.max(Config.Cell.MultiSplitFanRadians or 0, 0)
-		local fanIndex = i - (newChildren + 1) * 0.5
-		local perChild = if newChildren > 1 then fanSpread / (newChildren - 1) else 0
-		local fanAngle = fanIndex * perChild
-		local dir = rotateDirection(aim, fanAngle)
-
-		local childVelocity
-		local spawnPos
-		-- Stagger children along aim so a straight-line (fan~=0) split
-		-- doesn't spawn every child on the exact same pixel.
-		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.18)
-		local staggerOffset = (i - 1) * staggerStep
-		if state.frozen then
-			childVelocity = Vector2.zero
-			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
-		else
-			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
-			spawnPos = self:_adjustSpawnPositionForBarriers(
-				biggest.pos,
-				biggest.pos + dir * (
-					pieceRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)
-					+ staggerOffset
-				),
-				pieceRadius
-			)
+function GameService:_repeatSplitPlayer(state, generations: number)
+	-- E/R repeat actual Space presses: every eligible cell divides on each
+	-- generation, subject to minimum mass and the global cell cap.
+	for _ = 1, math.max(math.floor(generations), 1) do
+		if #state.cells >= Config.Player.MaxCells then
+			break
 		end
-
-		local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity, true)
-		if child then
-			child.sweptEatStartPos = biggest.pos
-		end
+		self:_splitPlayer(state)
 	end
 end
 
 -- ==================================================================
 -- FREEZE ability (toggle). Flips state.frozen. When frozen:
 --  * _moveCells skips position updates and boost decay for the
---    owner's cells, so split momentum is preserved verbatim.
+--    owner's cells.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
 --  * _handleEating is NOT gated, so touching cells past their
@@ -3033,105 +3026,15 @@ function GameService:_toggleFreeze(state)
 	else
 		-- Transitioning frozen -> not frozen. Mark an unfreeze grace
 		-- window so _resolveSamePlayerPush eases stacked cells apart
-		-- instead of exploding them outward in one step. Also nudge
-		-- coincident cells by a tiny deterministic offset so the push
-		-- has a direction to resolve.
+		-- instead of exploding them outward in one step.
 		local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
 		if graceSeconds > 0 then
 			state.unfreezeGraceUntil = now + graceSeconds
 			state.unfreezeGraceStart = now
 		end
-		local jitter = math.max(cfg.UnfreezeJitterDistance or 0, 0)
-		if jitter > 0 then
-			for _, id in state.cells do
-				local cell = self.cells[id]
-				if cell then
-					local angle = ((cell.id * 73) % 628) / 100
-					cell.pos = self:_clampToWorld(
-						cell.pos + Vec2.fromAngle(angle) * jitter,
-						cell.radius
-					)
-				end
-			end
-		end
 
-		-- Release fan: add a radial outward boost from the group
-		-- centroid so a stacked pile actually FANS OUT on unfreeze
-		-- instead of stalling in place while the cursor pulls the
-		-- cluster inward.
-		--
-		-- Design:
-		--   * Impulse strength is roughly UNIFORM per cell (no mass
-		--     amplification of tiny cells — that produces "rope"
-		--     spread where small cells fly to the map edge while big
-		--     cells barely move).
-		--   * F-spam guard: only apply if freeze was actually held for
-		--     ReleaseMinHoldSeconds. Instant re-toggles do nothing so
-		--     you can't stack impulses.
-		--   * Boost cap: after applying, clamp total cell.boost
-		--     magnitude to ReleaseImpulse so back-to-back releases
-		--     never accumulate.
-		--   * Skipped for 0/1 cells and if the pile isn't actually
-		--     stacked (mean distance from centroid > 2 * biggest cell
-		--     radius) — no explosive push when your cells are already
-		--     spread out.
-		local releaseImpulse = math.max(cfg.ReleaseImpulse or 0, 0)
-		local minHold = math.max(cfg.ReleaseMinHoldSeconds or 0, 0)
-		local heldEnough = (now - (state.lastFreezeAt or 0)) >= minHold
-			or (state.frozenSince and now - state.frozenSince >= minHold)
-		if releaseImpulse > 0 and #state.cells > 1 and heldEnough then
-			local cx, cy, totalMass = 0, 0, 0
-			local biggestRadius = 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					cx += c.pos.X * c.mass
-					cy += c.pos.Y * c.mass
-					totalMass += c.mass
-					if c.radius > biggestRadius then
-						biggestRadius = c.radius
-					end
-				end
-			end
-			if totalMass > 0 then
-				local centroid = Vector2.new(cx / totalMass, cy / totalMass)
-
-				-- Only fire if the pile is actually clustered.
-				local sumDist = 0
-				local counted = 0
-				for _, id in state.cells do
-					local c = self.cells[id]
-					if c then
-						sumDist += (c.pos - centroid).Magnitude
-						counted += 1
-					end
-				end
-				local meanDist = if counted > 0 then sumDist / counted else 0
-				local stackThreshold = math.max(biggestRadius * 1.6, 1)
-				if meanDist <= stackThreshold then
-					for _, id in state.cells do
-						local cell = self.cells[id]
-						if cell then
-							local delta = cell.pos - centroid
-							local dist = delta.Magnitude
-							local dir
-							if dist > 0.1 then
-								dir = delta / dist
-							else
-								-- Deterministic direction if cell is exactly at centroid.
-								local angle = ((cell.id * 137) % 628) / 100
-								dir = Vec2.fromAngle(angle)
-							end
-							-- Uniform impulse per cell, REPLACING any prior
-							-- boost so F-spam and residual split boost can
-							-- never stack. Cap not needed since we assign
-							-- rather than add.
-							cell.boost = dir * releaseImpulse
-						end
-					end
-				end
-			end
-		end
+		-- Split boost is intentionally left untouched while frozen, so
+		-- paused movement resumes in the same direction on release.
 	end
 
 	state.frozen = not state.frozen
@@ -3151,7 +3054,23 @@ function GameService:_ejectMassFromCells(state, cells)
 	-- actually work — otherwise the surrounding big cells eat each
 	-- other's pellets before they can cross to the tiny receiver.
 	local targetCellId = nil
+	local cursorMaySelfFeed = false
 	if Config.Ejected.SkipTargetCell and state.input.target then
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = state.center ~= nil
+			and Vec2.distanceSquared(state.input.target, state.center) <= centerRadius * centerRadius
+		if not cursorMaySelfFeed then
+			for _, cell in cells do
+				if self.cells[cell.id]
+					and Vec2.distanceSquared(state.input.target, cell.pos) <= cell.radius * cell.radius
+				then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed then
 		local bestDistSq = math.huge
 		for _, cell in cells do
 			if self.cells[cell.id] then
@@ -3192,7 +3111,17 @@ function GameService:_ejectMassFromCells(state, cells)
 		end
 	end
 
-	local perTickLimit = math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	-- In self-feed mode a small configurable group of pellets represents
+	-- every feeding cell. Their combined gain is unchanged, but the feed
+	-- looks fuller without rendering up to 31 pellets every interval.
+	local aggregateSelfFeed = targetCellId ~= nil and eligibleCount > 1
+	local perTickLimit = if aggregateSelfFeed
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	local pickupMultiplier = if aggregateSelfFeed then eligibleCount / perTickLimit else 1
 	local startIndex = (state.ejectCycleOffset % eligibleCount) + 1
 	local firedAny = false
 
@@ -3200,7 +3129,10 @@ function GameService:_ejectMassFromCells(state, cells)
 		local index = ((startIndex - 1 + step) % eligibleCount) + 1
 		local cell = eligible[index]
 		if self.cells[cell.id] and canCellFireEjected(cell) then
-			local aim = self:_cellAimDirection(state, cell)
+			local targetCell = targetCellId and self.cells[targetCellId] or nil
+			local aim = if targetCell
+				then Vec2.safeUnit(targetCell.pos - cell.pos, self:_cellAimDirection(state, cell))
+				else self:_cellAimDirection(state, cell)
 			local halfCone = math.rad(Config.Ejected.ConeDegrees) * 0.5
 			local angle = self.rng:NextNumber(-halfCone, halfCone)
 			local cos = math.cos(angle)
@@ -3209,13 +3141,39 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * cos - aim.Y * sin,
 				aim.X * sin + aim.Y * cos
 			), aim)
-			local cost = math.max(Config.Ejected.Cost or 0, 0)
-			if cost > 0 then
+			local cost = ejectedCostForCell(cell)
+			if not aggregateSelfFeed and cost > 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
+			local inheritedVelocity = Vector2.zero
+			if not state.frozen then
+				local moveDir, moveScale = self:_cellMoveVector(state, cell)
+				local moveSpeed = Config.Player.BaseSpeed
+					* (Config.Player.InitialMass / math.max(cell.mass, 1)) ^ Config.Player.SpeedExponent
+				moveSpeed = math.clamp(moveSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+				inheritedVelocity = moveDir * moveSpeed * moveScale + (cell.boost or Vector2.zero)
+			end
 			local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
-			self:_spawnEjected(cell.pos + aim * spawnDistance, shotDir, state.userId, cell.id, targetCellId)
+			self:_spawnEjected(
+				cell.pos + aim * spawnDistance,
+				shotDir,
+				state.userId,
+				cell.id,
+				targetCellId,
+				pickupMultiplier,
+				inheritedVelocity
+			)
 			firedAny = true
+		end
+	end
+	if firedAny and aggregateSelfFeed then
+		local cost = ejectedCostForCell(eligible[1])
+		if cost > 0 then
+			for _, feedingCell in eligible do
+				if self.cells[feedingCell.id] and feedingCell.mass > cost then
+					self:_setCellMass(feedingCell, feedingCell.mass - cost)
+				end
+			end
 		end
 	end
 	state.ejectCycleOffset = (startIndex - 1 + perTickLimit) % eligibleCount
@@ -3267,32 +3225,50 @@ function GameService:_moveCells(dt: number)
 	-- longer sprint away from the pack.
 	local playerBaseSpeed = {}
 	local playerCentroid = {}
+	local playerHighMassDecayFraction = {}
 	local clusterRatio = math.max(Config.Cell.ClusterMaxSpeedRatio or 1, 1)
 	local cohesion = math.clamp(Config.Cell.CohesionStrength or 0, 0, 1)
+	local highDecayStartMass = math.max(Config.Player.HighMassDecayStartMass or math.huge, 1)
+	local highDecayStartRate = math.max(Config.Player.HighMassDecayStartPerSecond or 0, 0)
+	local highDecayReferenceMass = math.max(
+		Config.Player.HighMassDecayReferenceMass or highDecayStartMass + 1,
+		highDecayStartMass + 1
+	)
+	local highDecayReferenceRate = math.max(
+		Config.Player.HighMassDecayReferencePerSecond or highDecayStartRate,
+		highDecayStartRate
+	)
 	for userId, state in self.playersByUserId do
-		if #state.cells > 1 then
-			local maxMass = 0
-			local totalMass = 0
-			local cx, cy = 0, 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					if c.mass > maxMass then
-						maxMass = c.mass
-					end
-					totalMass += c.mass
+		local maxMass = 0
+		local totalMass = 0
+		local cx, cy = 0, 0
+		for _, id in state.cells do
+			local c = self.cells[id]
+			if c then
+				if c.mass > maxMass then
+					maxMass = c.mass
+				end
+				totalMass += c.mass
+				if #state.cells > 1 then
 					cx += c.pos.X * c.mass
 					cy += c.pos.Y * c.mass
 				end
 			end
-			if maxMass > 0 then
-				local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
-				bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
-				playerBaseSpeed[userId] = bigSpeed
-			end
-			if totalMass > 0 then
-				playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
-			end
+		end
+		if maxMass > 0 and #state.cells > 1 then
+			local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
+			bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+			playerBaseSpeed[userId] = bigSpeed
+		end
+		if totalMass > 0 and #state.cells > 1 then
+			playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
+		end
+		if totalMass >= highDecayStartMass and highDecayStartRate > 0 then
+			local massProgress = (totalMass - highDecayStartMass)
+				/ (highDecayReferenceMass - highDecayStartMass)
+			local lossPerSecond = highDecayStartRate
+				+ (highDecayReferenceRate - highDecayStartRate) * math.max(massProgress, 0)
+			playerHighMassDecayFraction[userId] = math.clamp(lossPerSecond * dt / totalMass, 0, 0.95)
 		end
 	end
 
@@ -3302,7 +3278,10 @@ function GameService:_moveCells(dt: number)
 		-- applies so parking doesn't cheese decay timers.
 		local ownerState = self.playersByUserId[cell.ownerUserId]
 		if ownerState and ownerState.frozen then
-			if cell.mass > Config.Player.MinDecayMass then
+			local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+			if highDecayFraction then
+				self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+			elseif cell.mass > Config.Player.MinDecayMass then
 				self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 			end
 			continue
@@ -3341,7 +3320,10 @@ function GameService:_moveCells(dt: number)
 		cell.pos += (dir * speed * speedScale + pull + cell.boost) * dt
 		cell.pos = self:_clampToWorld(cell.pos, cell.radius)
 
-		if cell.mass > Config.Player.MinDecayMass then
+		local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+		if highDecayFraction then
+			self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+		elseif cell.mass > Config.Player.MinDecayMass then
 			self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 		end
 	end
@@ -3378,6 +3360,13 @@ function GameService:_moveEjected(dt: number)
 	end
 
 	for id, ejected in self.ejected do
+		ejected.previousPos = ejected.pos
+		local targetCell = ejected.targetCellId and self.cells[ejected.targetCellId] or nil
+		if ejected.targetCellId and not targetCell then
+			-- A merged or removed receiver should not leave the pellet
+			-- locked to a cell that no longer exists.
+			ejected.targetCellId = nil
+		end
 		local nextPos = ejected.pos + ejected.vel * dt
 		local worldMin, worldMax = self:_worldBounds()
 		local minX = worldMin.X + ejected.radius
@@ -4091,7 +4080,13 @@ function GameService:_queueEatEventsForCell(cell, events)
 		end
 	end
 
-	local ejectedQueryRadius = cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+	-- Include one maximum pellet step so a small, fast pellet cannot cross
+	-- entirely through a cell between simulation ticks.
+	local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
+	local ejectedQueryRadius = cell.radius
+		+ Config.Ejected.Radius
+		+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+		+ ejectedStepDistance
 	local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in ejectedCandidates do
 		local ejected = self.ejected[id]
@@ -4466,6 +4461,39 @@ function GameService:_bumpVirusesFromEjected()
 	end
 end
 
+function GameService:_nearMergeSiblingForVirusBurst(cell)
+	local state = cell.owner
+	if not state or #state.cells ~= 2 then
+		return nil
+	end
+
+	local sibling
+	for _, id in state.cells do
+		if id ~= cell.id then
+			sibling = self.cells[id]
+			break
+		end
+	end
+	if not sibling then
+		return nil
+	end
+
+	local now = os.clock()
+	local mergeReadyAt = math.max(cell.canRecombineAt or now, sibling.canRecombineAt or now)
+	local mergeWindow = math.max(Config.Virus.NearMergeWindowSeconds or 1, 0)
+	if mergeReadyAt > now + mergeWindow then
+		return nil
+	end
+
+	local distanceScale = math.max(Config.Virus.NearMergeDistanceScale or 1.25, 1)
+	local nearDistance = (cell.radius + sibling.radius) * distanceScale
+	if Vec2.distanceSquared(cell.pos, sibling.pos) > nearDistance * nearDistance then
+		return nil
+	end
+
+	return sibling
+end
+
 function GameService:_consumeBurstObject(cell, bonusMass: number?, source: string?): boolean
 	-- Virus.SplitOnEat = false: absorb the mass without bursting the
 	-- cell into pieces. Prevents the "auto-split" the player didn't ask
@@ -4478,7 +4506,28 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 		return true
 	end
 
-	if self:_burstCell(cell) then
+	local nearMergeSibling = if source == "virus"
+		then self:_nearMergeSiblingForVirusBurst(cell)
+		else nil
+	local didBurst, burstChildren = self:_burstCell(cell)
+	if didBurst then
+		if nearMergeSibling and self.cells[nearMergeSibling.id] and burstChildren then
+			table.sort(burstChildren, function(a, b)
+				return Vec2.distanceSquared(a.pos, nearMergeSibling.pos)
+					< Vec2.distanceSquared(b.pos, nearMergeSibling.pos)
+			end)
+			local consumeCount = math.min(
+				math.max(math.floor(Config.Virus.NearMergeCannibalizePieces or 3), 0),
+				#burstChildren
+			)
+			for i = 1, consumeCount do
+				local child = burstChildren[i]
+				if self.cells[child.id] then
+					self:_setCellMass(nearMergeSibling, nearMergeSibling.mass + child.mass)
+					self:_removeCell(child, nearMergeSibling.id)
+				end
+			end
+		end
 		return true
 	end
 
@@ -4493,7 +4542,7 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 	return false
 end
 
-function GameService:_burstCell(cell): boolean
+function GameService:_burstCell(cell): (boolean, {any}?)
 	local state = cell.owner
 	local freeSlots = Config.Player.MaxCells - #state.cells
 	if freeSlots <= 0 then
@@ -4511,6 +4560,7 @@ function GameService:_burstCell(cell): boolean
 	self:_setCellMass(cell, massPerPiece)
 	cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 	cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	local children = {}
 
 	for i = 1, pieces - 1 do
 		local dir = Vec2.fromAngle((math.pi * 2) * (i / (pieces - 1)))
@@ -4529,10 +4579,11 @@ function GameService:_burstCell(cell): boolean
 		)
 		if child then
 			child.sweptEatStartPos = cell.pos
+			children[#children + 1] = child
 		end
 	end
 
-	return true
+	return true, children
 end
 
 function GameService:_updatePlayerCenters()
@@ -4637,7 +4688,9 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			ejected.id,
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
-			ejected.colorPayload,
+			ejected.ownerUserId,
+			round(ejected.vel.X, Config.Network.PositionPrecision),
+			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}
 	end
 
@@ -4852,7 +4905,7 @@ function GameService:_trimFastSnapshotRows(cellsPayload, ejectedPayload, spawner
 	write = 1
 	local ejectedOverflow = {}
 	for read = 1, #ejectedPayload do
-		local rowBytes = 21
+		local rowBytes = 29
 		if used + rowBytes <= budget then
 			ejectedPayload[write] = ejectedPayload[read]
 			write += 1
@@ -4975,10 +5028,10 @@ function GameService:_packEjectedBuffer(rows)
 		return nil
 	end
 	if typeof(buffer) ~= "table" then
-		return self:_compactRows(rows, 4)
+		return self:_compactRows(rows, 6)
 	end
 
-	local rowBytes = 21
+	local rowBytes = 29
 	local payload = buffer.create(#rows * rowBytes)
 	local offset = 0
 	for _, row in rows do
@@ -4993,6 +5046,8 @@ function GameService:_packEjectedBuffer(rows)
 			buffer.writeu8(payload, offset + 12, 2)
 			buffer.writef64(payload, offset + 13, packedColorValue(ownerOrColor))
 		end
+		buffer.writef32(payload, offset + 21, row[5] or 0)
+		buffer.writef32(payload, offset + 25, row[6] or 0)
 		offset += rowBytes
 	end
 	return payload
@@ -5064,8 +5119,14 @@ function GameService:_appendCellConsumePayload(gone, removedCells)
 	for _, id in removedCells do
 		local consume = self.cellConsumeTargets[id]
 		if consume then
+			local eaterId = consume.eaterId
+			local visited = {}
+			while eaterId and self.cellConsumeTargets[eaterId] and not visited[eaterId] do
+				visited[eaterId] = true
+				eaterId = self.cellConsumeTargets[eaterId].eaterId
+			end
 			rows = rows or {}
-			rows[#rows + 1] = { id, consume.eaterId }
+			rows[#rows + 1] = { id, eaterId or consume.eaterId }
 		end
 	end
 	if rows then

@@ -11,7 +11,7 @@ local Renderer = {}
 Renderer.__index = Renderer
 local FAST_OWN_CELL_ROW_BYTES = 20
 local FAST_REMOTE_CELL_ROW_BYTES = 28
-local FAST_EJECTED_ROW_BYTES = 21
+local FAST_EJECTED_ROW_BYTES = 29
 local DEFAULT_AVATAR_DISPLAY_MODE = "face"
 local AVATAR_THUMBNAIL_TYPES = {
 	face = Enum.ThumbnailType.HeadShot,
@@ -84,7 +84,7 @@ local function splitImpulseForMass(mass: number?): number
 	return math.min(Config.Cell.SplitImpulse * scale, Config.Cell.SplitMaxBoost or math.huge)
 end
 
-local function canMassFireEjected(mass: number?): boolean
+local function canMassFireEjected(mass: number?, frozen: boolean?): boolean
 	if not mass then
 		return false
 	end
@@ -94,12 +94,34 @@ local function canMassFireEjected(mass: number?): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = if frozen
+		then math.max(Config.Ejected.FrozenCost or Config.Ejected.Cost or 0, 0)
+		else math.max(Config.Ejected.Cost or 0, 0)
 	return cost <= 0 or mass > cost
 end
 
 local function zIndexForRadius(radius: number): number
 	return 3 + math.clamp(math.floor(radius / 24 + 0.5), 0, 14)
+end
+
+local function movingPointTouchesCircle(state, center: Vector2, radius: number): boolean
+	local current = state.displayPos
+	if (current - center):Dot(current - center) <= radius * radius then
+		return true
+	end
+	local previous = state.previousDisplayPos
+	if not previous then
+		return false
+	end
+	local travel = current - previous
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared <= 0.000001 then
+		return false
+	end
+	local t = math.clamp((center - previous):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previous + travel * t
+	local delta = closest - center
+	return delta:Dot(delta) <= radius * radius
 end
 
 local function serverTimeNow(): number
@@ -238,7 +260,7 @@ end
 
 local function decodeEjectedBuffer(payload)
 	if typeof(payload) ~= "buffer" then
-		return expandPackedRows(payload, 4)
+		return expandPackedRows(payload, 6)
 	end
 
 	local rows = {}
@@ -251,6 +273,8 @@ local function decodeEjectedBuffer(payload)
 			buffer.readf32(payload, offset + 4),
 			buffer.readf32(payload, offset + 8),
 			if payloadType == 1 then ownerOrColor else colorPayloadFromPacked(ownerOrColor),
+			buffer.readf32(payload, offset + 21),
+			buffer.readf32(payload, offset + 25),
 		}
 		rowIndex += 1
 	end
@@ -626,7 +650,13 @@ end
 function Renderer:_removePredictedEjectedNear(pos: Vector2)
 	local bestId = nil
 	local bestDistance = math.huge
-	local maxDistance = math.max(Config.Ejected.Radius * 6, 54)
+	-- Allow for network transit while matching the authoritative pellet
+	-- to its local prediction. A failed match renders both as two streams.
+	local maxDistance = math.max(
+		Config.Ejected.Radius * 6,
+		Config.Ejected.Speed * 0.4,
+		54
+	)
 	local maxDistanceSquared = maxDistance * maxDistance
 	for id, state in self.ejectedStates do
 		if state.predicted == true then
@@ -669,7 +699,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	for id, state in self.cellStates do
 		if state.isOwn
 			and state.confirmed
-			and canMassFireEjected(state.mass)
+			and canMassFireEjected(state.mass, self.localFrozen)
 		then
 			eligible[#eligible + 1] = {
 				id = id,
@@ -684,10 +714,50 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id < b.id
 	end)
 
+	-- Self-feed only when the cursor is near the group center or actually
+	-- inside one of the player's cells. Otherwise every cell fires outward.
+	local targetCell = nil
+	local cursorMaySelfFeed = false
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" then
+		local center = self.predictedOwnCenter
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = center ~= nil and (target - center).Magnitude <= centerRadius
+		if not cursorMaySelfFeed then
+			for _, entry in eligible do
+				if (target - entry.state.displayPos).Magnitude <= entry.state.radius then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed and #eligible > 1 then
+		local targetIndex = nil
+		local bestDistanceSquared = math.huge
+		for index, entry in eligible do
+			local delta = target - entry.state.displayPos
+			local distanceSquared = delta:Dot(delta)
+			if distanceSquared < bestDistanceSquared then
+				bestDistanceSquared = distanceSquared
+				targetIndex = index
+			end
+		end
+		if targetIndex then
+			targetCell = eligible[targetIndex].state
+			table.remove(eligible, targetIndex)
+		end
+	end
+
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
-	local perTickLimit = math.min(eligibleCount, visualLimit)
+	-- Server spreads the combined self-feed gain over a small visual group.
+	local perTickLimit = if targetCell
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, visualLimit)
 	local startIndex = (self.predictedEjectCycleOffset % eligibleCount) + 1
 	for step = 0, perTickLimit - 1 do
 		local entry = eligible[((startIndex - 1 + step) % eligibleCount) + 1]
@@ -696,7 +766,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		-- world position. Falls back to the shared move-aim direction
 		-- when the target is missing or degenerate (cursor on cell).
 		local dir = fallbackDir
-		if typeof(target) == "Vector2" then
+		if targetCell then
+			local delta = targetCell.displayPos - cell.displayPos
+			if delta.Magnitude > 0.001 then
+				dir = delta.Unit
+			end
+		elseif typeof(target) == "Vector2" then
 			local delta = target - cell.displayPos
 			if delta.Magnitude > 0.001 then
 				dir = delta.Unit
@@ -712,6 +787,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		)
 		local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
 		local pos = self:_clampToWorld(cell.displayPos + dir * spawnDistance, Config.Ejected.Radius)
+		local inheritedVelocity = Vector2.zero
+		if not self.localFrozen then
+			local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, cell.displayPos, cell.radius)
+			inheritedVelocity = moveDir * speedForMass(cell.mass) * moveScale
+				+ (cell.splitVisualBoost or Vector2.zero)
+		end
 		local id = self.nextPredictedEjectedId
 		self.nextPredictedEjectedId -= 1
 		if self.nextPredictedEjectedId < -1000000 then
@@ -721,7 +802,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		self.ejectedStates[id] = {
 			displayPos = pos,
 			targetPos = pos,
-			velocity = shotDir * Config.Ejected.Speed,
+			velocity = shotDir * Config.Ejected.Speed + inheritedVelocity,
 			radius = Config.Ejected.Radius,
 			targetRadius = Config.Ejected.Radius,
 			color = cell.color or Config.Render.EjectedColor,
@@ -732,6 +813,8 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			receivedAt = now,
 			extrapolate = true,
 			predicted = true,
+			sourceCell = cell,
+			targetCell = targetCell,
 			worldPadding = Config.Ejected.Radius,
 			consumeAfter = now + math.max(Config.Ejected.OwnerReeatDelay or 0, Config.Ejected.LocalVisualMinVisibleSeconds or 0),
 			expiresAt = now + (Config.Ejected.LocalVisualLifeSeconds or 0.8),
@@ -840,7 +923,22 @@ function Renderer:setSnapshot(snapshot)
 			if packed[4] == snapshot.you then
 				self:_removePredictedEjectedNear(Vector2.new(packed[2], packed[3]))
 			end
-			self:_syncEntity(self.ejectedStates, packed[1], Vector2.new(packed[2], packed[3]), Config.Ejected.Radius, nil, self:_ejectedColor(packed[4]), nil, serial, receivedAt, false, "ejected")
+			local authoritativeVelocity = if typeof(packed[5]) == "number" and typeof(packed[6]) == "number"
+				then Vector2.new(packed[5], packed[6])
+				else nil
+			self:_syncEntity(
+				self.ejectedStates,
+				packed[1],
+				Vector2.new(packed[2], packed[3]),
+				Config.Ejected.Radius,
+				nil,
+				self:_ejectedColor(packed[4]),
+				{ velocity = authoritativeVelocity },
+				serial,
+				receivedAt,
+				false,
+				"ejected"
+			)
 		end
 
 		for _, packed in snapshot.cells or {} do
@@ -1011,7 +1109,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 	end
 
 	local now = os.clock()
-	local duration = math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 	for _, id in ids do
 		local state = self.cellStates[id]
 		if not state then
@@ -1046,10 +1143,18 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 		end
 
 		if bestTarget then
+			local isMerge = sourceOwner ~= nil
+				and bestTarget.extra
+				and bestTarget.extra.ownerUserId == sourceOwner
+			local duration = if isMerge
+				then math.max(Config.Render.MergeAnimationSeconds or 0.42, 0.01)
+				else math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 			state.consumeTarget = bestTarget
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
+			state.consumeStartPos = state.displayPos
 			state.consumeStartRadius = state.radius
+			state.consumeIsMerge = isMerge
 			state.extrapolate = false
 			state.isOwn = false
 		else
@@ -1077,7 +1182,7 @@ function Renderer:handleShopMessage(payload)
 	end
 end
 
-function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra)
+function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra, serial: number)
 	local renderConfig = Config.Render
 	if renderConfig.SplitSpawnAnimationEnabled == false or typeof(extra) ~= "table" then
 		return nil
@@ -1096,10 +1201,12 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 	local bestOrigin = nil
 	local bestSource = nil
 	local bestDistanceSquared = math.huge
+	local bestIsMassDropSource = false
 	for otherId, state in self.cellStates do
+		local isMassDropSource = state.lastMassDropSerial == serial
 		if otherId ~= id
 			and state.confirmed == true
-			and not isSplitSpawnAnimating(state)
+			and (not isSplitSpawnAnimating(state) or isMassDropSource)
 			and state.extra
 			and state.extra.ownerUserId == ownerUserId
 		then
@@ -1107,10 +1214,16 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 			if origin then
 				local delta = pos - origin
 				local distanceSquared = delta:Dot(delta)
-				if distanceSquared <= maxDistanceSquared and distanceSquared < bestDistanceSquared then
+				if distanceSquared <= maxDistanceSquared
+					and (
+						(isMassDropSource and not bestIsMassDropSource)
+						or (isMassDropSource == bestIsMassDropSource and distanceSquared < bestDistanceSquared)
+					)
+				then
 					bestDistanceSquared = distanceSquared
 					bestOrigin = origin
 					bestSource = state
+					bestIsMassDropSource = isMassDropSource
 				end
 			end
 		end
@@ -1129,21 +1242,26 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local splitVisualBoost = nil
 		if kind == "cell" then
 			local origin
-			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra)
+			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
 			if origin then
 				displayPos = origin
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
 				local launchDelta = pos - origin
 				local launchDir = if launchDelta.Magnitude > 0.001 then launchDelta.Unit else self.localMoveAim
-				if not self.localFrozen then
-					splitVisualBoost = launchDir * splitImpulseForMass(mass)
+				local boostScale = if self.localFrozen
+					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+					else 1
+				if boostScale > 0 then
+					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
 				end
 			end
 		end
 		state = {
 			displayPos = displayPos,
 			targetPos = pos,
-			velocity = Vector2.zero,
+			velocity = if kind == "ejected" and extra and extra.velocity
+				then extra.velocity
+				else Vector2.zero,
 			radius = displayRadius,
 			targetRadius = radius,
 			receivedAt = receivedAt,
@@ -1162,6 +1280,20 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		}
 		states[id] = state
 	else
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
+			and mass - state.mass >= math.max(Config.Render.LiquidRippleMinMassGain or 2, 0)
+		then
+			state.liquidRippleStartedAt = os.clock()
+		end
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
+			and mass < state.mass * 0.8
+		then
+			state.lastMassDropSerial = serial
+		end
 		if isStatic then
 			local tolerance = Config.Render.StaticPositionTolerance or 2
 			local staticPos = state.staticPos or state.targetPos
@@ -1190,7 +1322,15 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		else
 			local elapsed = math.max(receivedAt - (state.receivedAt or receivedAt), 1 / Config.Simulation.NetworkHz)
 			state.velocity = (pos - state.targetPos) / elapsed
-			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
+			if kind == "ejected" and extra and extra.velocity then
+				state.velocity = extra.velocity
+			end
+			if kind == "cell"
+				and extra
+				and extra.isOwn
+				and state.splitVisualBoost
+				and not self.localFrozen
+			then
 				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale
 				local observedBoost = state.velocity - baseVelocity
@@ -1571,7 +1711,13 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 
 	for _, cellState in self.cellStates do
 		if cellState.mass and cellState.mass >= (Config.Ejected.EatMinCellMass or 18) then
-			if not cellState.isOwn or now >= (state.consumeAfter or 0) then
+			if cellState.isOwn and state.targetCell and cellState ~= state.targetCell then
+				continue
+			end
+			local waitingForSource = cellState.isOwn
+				and cellState == state.sourceCell
+				and now < (state.consumeAfter or 0)
+			if not waitingForSource then
 				-- Own cells consume pellets by center-in-disc (matches
 				-- the server rule in ejectedTouchPickupDistance).
 				-- Enemies still use edge-to-edge touch.
@@ -1580,9 +1726,10 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 					local padding = Config.Ejected.TouchPickupPadding or 0
 					local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 					local pelletRadius = state.radius or Config.Ejected.Radius
-					local touchDistance = math.max(targetRadius - pelletRadius * coverage + padding, 0)
-					local delta = state.displayPos - cellState.displayPos
-					if delta:Dot(delta) <= touchDistance * touchDistance then
+					local touchDistance = if state.targetCell == cellState
+						then math.max(targetRadius + padding, 0)
+						else math.max(targetRadius - pelletRadius * coverage + padding, 0)
+					if movingPointTouchesCircle(state, cellState.displayPos, touchDistance) then
 						return true
 					end
 				elseif self:_predictedEjectedTouchesCircle(state, cellState, 0) then
@@ -1597,6 +1744,7 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
+	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)
 	if clamped.X ~= nextPos.X then
@@ -1760,9 +1908,16 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local progress = math.clamp((now - (state.consumeStartedAt or now)) / duration, 0, 1)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
-			local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
-			state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
-			state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			if state.consumeIsMerge then
+				local easedProgress = progress * progress * (3 - 2 * progress)
+				local startPos = state.consumeStartPos or state.displayPos
+				state.displayPos = startPos:Lerp(targetPos, easedProgress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - easedProgress), 0)
+			else
+				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
+				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			end
 			if now >= state.consumeUntil then
 				states[id] = nil
 				self.cellPool:release(id)
@@ -2074,12 +2229,18 @@ end
 
 function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: number, padding: number?): boolean
 	local pickupRadius = state.radius or state.targetRadius or 0
+	local now = os.clock()
 	for _, cell in candidates do
-		if cell.mass >= minMass then
+		if state.targetCell and cell ~= state.targetCell then
+			continue
+		end
+		local waitingForSource = cell == state.sourceCell and now < (state.consumeAfter or 0)
+		if cell.mass >= minMass and not waitingForSource then
 			local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
-			local touchDistance = math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
-			local delta = cell.displayPos - state.displayPos
-			if delta:Dot(delta) <= touchDistance * touchDistance then
+			local touchDistance = if state.targetCell == cell
+				then math.max(cell.radius + (padding or 0), 0)
+				else math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
+			if movingPointTouchesCircle(state, cell.displayPos, touchDistance) then
 				return true
 			end
 		end
@@ -2149,6 +2310,31 @@ function Renderer:_updateHud(dt: number)
 	end
 end
 
+function Renderer:_applyLiquidBorderAnimation(state, drawOptions)
+	-- The cell body and artwork stay perfectly still. A mass gain launches
+	-- translucent rings from the edge toward the center like disturbed water.
+	drawOptions.width = nil
+	drawOptions.height = nil
+	drawOptions.rotation = nil
+	drawOptions.deformContent = nil
+
+	local startedAt = state.liquidRippleStartedAt
+	local duration = math.max(Config.Render.LiquidRippleDuration or 0.48, 0.01)
+	if Config.Render.LiquidRippleEnabled == false or not startedAt then
+		drawOptions.liquidRippleProgress = nil
+		return
+	end
+
+	local progress = (os.clock() - startedAt) / duration
+	if progress >= 1 then
+		state.liquidRippleStartedAt = nil
+		drawOptions.liquidRippleProgress = nil
+		return
+	end
+	drawOptions.liquidRippleProgress = math.clamp(progress, 0, 1)
+	drawOptions.liquidRippleDepth = Config.Render.LiquidRippleDepth or 0.18
+end
+
 function Renderer:render(dt: number?)
 	dt = dt or 1 / 60
 	self:_drawGrid()
@@ -2163,10 +2349,8 @@ function Renderer:render(dt: number?)
 	self.cellPool:begin()
 
 	self:_drawSimpleStates(self.foodPool, 100000000, self.foodStates, Config.Render.FoodColor, nil, Config.Render.FoodZIndex or 3)
-	local now = os.clock()
 	self:_drawSimpleStates(self.ejectedPool, 200000000, self.ejectedStates, Config.Render.EjectedColor, function(state)
 		return state.predicted == true
-			and now >= (state.consumeAfter or 0)
 			and self:_ownCellCanTouchPickupFromList(
 				ownEatCandidates,
 				state,
@@ -2180,7 +2364,13 @@ function Renderer:render(dt: number?)
 		then
 			local screen = self.camera:worldToScreen(state.displayPos)
 			local screenRadius = math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
-			self.virusDrawOptions.zIndex = math.max(zIndexForRadius(state.radius), Config.Render.ObjectMinZIndex or 6)
+			-- Match the cell radius-based layer scale. A cell smaller than
+			-- the virus is painted underneath it, while a cell large enough
+			-- to cover and eat the virus is painted above it.
+			self.virusDrawOptions.zIndex = math.max(
+				math.floor(state.radius),
+				Config.Render.ObjectMinZIndex or 6
+			)
 			self.virusPool:draw(300000000 + id, screen, screenRadius, Config.Render.VirusColor, self.virusDrawOptions)
 		end
 	end
@@ -2254,6 +2444,7 @@ function Renderer:render(dt: number?)
 				drawOptions.image = avatarImage
 				drawOptions.imageScaleType = avatarScaleType
 			end
+			self:_applyLiquidBorderAnimation(state, drawOptions)
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
 	end

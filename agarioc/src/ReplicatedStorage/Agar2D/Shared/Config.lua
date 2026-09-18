@@ -47,8 +47,12 @@ Config.Player = {
 	InitialMass = 1000,
 	MinDecayMass = 140,
 	DecayPerSecond = 0.0004, -- was 0.001; slower shrink so mass sticks around
-	BaseSpeed = 335,
-	MinSpeed = 82,
+	HighMassDecayStartMass = 50000,
+	HighMassDecayStartPerSecond = 500,
+	HighMassDecayReferenceMass = 100000,
+	HighMassDecayReferencePerSecond = 2000,
+	BaseSpeed = 275,
+	MinSpeed = 75,
 	SpeedExponent = 0.42,
 	SpawnInvulnSeconds = 1.2,
 	MovementDeadZone = 10,
@@ -72,21 +76,25 @@ Config.Cell = {
 	RecombineSeconds = 12, -- legacy fallback; see RecombineMin/Max below
 	-- Mass-scaled recombine: small cells merge back quickly, big cells wait.
 	-- Formula: clamp(Min + (mass / ScaleMass) * PerScaleMass, Min, Max).
-	RecombineMinSeconds = 1.5, -- floor for very small cells
-	RecombineMaxSeconds = 5, -- cap; even the biggest cells wait at most this long
+	RecombineMinSeconds = 2, -- floor for very small cells
+	RecombineMaxSeconds = 8, -- cap for the biggest cells
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
-	SplitMinMass = 1000,
-	SplitImpulse = 850, -- was 600; splits actually spread now
+	SplitMinMass = 100,
+	SplitImpulse = 700,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
-	SplitInheritedBoostScale = 0.85,
-	SplitMaxBoost = 1650,
-	SplitBoostDragPerSecond = 1.9,
+	SplitInheritedBoostScale = 0.65,
+	SplitMaxBoost = 900,
+	SplitBoostDragPerSecond = 2.4,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
 	SplitSpawnOffsetRadiusScale = 0.35,
+	-- Frozen splits stay motionless after spawning, but appear a small
+	-- distance toward the cursor so the split still has direction.
+	FrozenSplitNudgeRadiusScale = 0.55,
+	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -100,34 +108,30 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: add a fixed number of pieces from the biggest cell.
-	-- E adds 2 children (3 total from one cell); R adds 3 (4 total).
+	-- E repeats the normal Space split for every eligible cell twice.
+	-- R repeats it three times.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	DoubleSplitPieces = 4, -- R
-	TripleSplitPieces = 3, -- E
+	RSplitGenerations = 3,
+	ESplitGenerations = 2,
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
 	-- speed * ratio) so they can't sprint away from the pack.
 	-- CohesionStrength (0..1) adds a gentle pull toward the group's
 	-- center of mass when a cell drifts far from it. 0 disables.
-	-- CohesionStrength is now 0: the constant tug toward the centroid
-	-- was reading as "snappy / pulling together", especially the
-	-- instant you froze. Cluster speed cap alone keeps the pack tight
-	-- without any active pulling force.
+	-- Keep disabled so sibling cells do not actively bunch together
+	-- before their recombination timer expires.
 	-- Ratio raised from 1.15 to 1.6 so small cells can catch up to
 	-- the big cell instead of feeling "roped" behind it.
 	ClusterMaxSpeedRatio = 1.6,
 	CohesionStrength = 0,
 
-	-- All cells use the same camera-center aim vector so a split travels in
-	-- parallel lanes instead of converging side-to-side on the cursor.
-	-- These small fans preserve a little organic lateral movement.
-	SplitGroupFanRadians = 0.008,
-	MultiSplitFanRadians = 0.014,
+	-- Splits aim directly from each source cell at the cursor.
+	SplitGroupFanRadians = 0,
+	MultiSplitFanRadians = 0,
 	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
@@ -154,7 +158,7 @@ Config.Cell = {
 	-- Set CannibalizeEnabled = false to turn the mechanic off entirely.
 	-- ==================================================================
 	CannibalizeEnabled = true,
-	CannibalizeSecondsSinceSplit = 5.0, -- was 2.0; wait past recombine window
+	CannibalizeSecondsSinceSplit = 8,
 	CannibalizeMassRatio = 4.0,         -- was 2.0; require a real size gap
 	CannibalizeOverlap = 0.85,
 }
@@ -197,20 +201,25 @@ Config.Food = {
 }
 
 Config.Virus = {
-	TargetCount = 60, -- was 28; scaled with bigger map
-	Mass = 500,
-	Radius = 76,
+	-- Keep enough hazards in the enlarged world that several are normally
+	-- visible around a player instead of being lost between camera regions.
+	TargetCount = 120,
+	Mass = 300,
+	Radius = 14,
 	EatSplitMinMass = 2000,
 	EatOverlap = 0.5,
-	-- If false, eating a virus just absorbs its mass without bursting
-	-- your cell into pieces. Set to true to restore agar.io behavior.
-	SplitOnEat = false,
+	-- Below the 32-cell cap a virus bursts the eater into more pieces.
+	-- At the cap, the virus is absorbed and its mass is gained instead.
+	SplitOnEat = true,
 	MaxBurstPieces = 8,
-	BumpVelocityTransfer = 1,
-	BumpMinSpeed = 300,
-	BumpMaxSpeed = 650,
-	BumpNudge = 10,
-	DragPerSecond = 0.8,
+	NearMergeWindowSeconds = 1,
+	NearMergeDistanceScale = 1.25,
+	NearMergeCannibalizePieces = 3,
+	BumpVelocityTransfer = 0.7,
+	BumpMinSpeed = 140,
+	BumpMaxSpeed = 300,
+	BumpNudge = 5,
+	DragPerSecond = 1.8,
 	WallBounceScale = 0.25,
 	StopSpeed = 10,
 	DynamicSnapshotMinSpeed = 8,
@@ -281,33 +290,13 @@ Config.Freeze = {
 	Enabled = true,
 	Debounce = 0.3, -- was 0.15; longer window kills F-spam scatter
 	Cost = 0,
-	-- Unfreeze grace: after releasing freeze, the server dampens
-	-- same-player push resolution so a stack of overlapping cells
-	-- drifts apart smoothly instead of exploding outward in one step.
-	-- The grace window is short by design — the actual outward motion
-	-- comes from ReleaseImpulse below, which gives cells a radial
-	-- boost from the group centroid. Grace just prevents the tiny
-	-- residual overlap from popping when cells finally separate.
-	UnfreezeGraceSeconds = 1.2, -- was 6.0; shorter, since ReleaseImpulse handles the motion
-	UnfreezeGraceStrength = 0.15, -- was 0.01; not so aggressively suppressed
-	UnfreezeGraceCurveExponent = 1.8, -- was 3.2; gentler ramp
-	UnfreezeMaxOverlapPerPass = 4, -- was 1.2; not the bottleneck anymore
+	-- Overlapping frozen cells are separated gradually after release.
+	-- Their boost is cleared by the server; there is no radial release fan.
+	UnfreezeGraceSeconds = 2.5,
+	UnfreezeGraceStrength = 0.03,
+	UnfreezeGraceCurveExponent = 2.2,
+	UnfreezeMaxOverlapPerPass = 2,
 	UnfreezePushPasses = 1,
-	-- Release fan impulse: on unfreeze, every owned cell gets a
-	-- radial outward boost from the group centroid (UNIFORM per cell,
-	-- not mass-scaled). Total cell.boost is CAPPED to this value so
-	-- F-spam can't stack impulses. ReleaseMinHoldSeconds means an
-	-- instant re-toggle (freeze -> unfreeze within a fraction of a
-	-- second) doesn't emit any impulse at all.
-	ReleaseImpulse = 220, -- was 320; softer fan-out (also assigned, not added, so no stacking)
-	ReleaseImpulseMassExponent = 0.28, -- kept for backward compat; no longer used
-	ReleaseImpulseMinScale = 0.4,       -- kept for backward compat; no longer used
-	ReleaseMinHoldSeconds = 0.4,        -- was 0.25; tap-F does nothing, longer hold to fan out
-	-- When cells are at (nearly) the same point after unfreeze, give
-	-- them a tiny deterministic jitter so the push has a direction to
-	-- resolve against — otherwise they'd sit on top of each other and
-	-- then suddenly pop when the grace ends.
-	UnfreezeJitterDistance = 0.4,
 }
 
 Config.Input = {
@@ -330,17 +319,15 @@ Config.Input = {
 Config.Ejected = {
 	-- Feeding always transfers this fixed amount; it is not derived from the
 	-- firing player's largest cell.
-	Mass = 100,
-	PickupMassMultiplier = 1, -- was 2; each pellet now gives 100 mass, not 200
-	Radius = 12,
+	Mass = 10,
+	PickupMassMultiplier = 1,
+	Radius = 4,
 	NozzleOffset = 2,
-	-- Cost was 0, so firing was minting mass out of thin air. Now the
-	-- source cell loses exactly what the pellet carries, so self-feed is
-	-- a true mass transfer (big -> small) instead of "big gets bigger".
-	Cost = 100,
+	Cost = 0,
+	FrozenCost = 10,
 	MinFireMass = 0,
-	EatMinCellMass = 18,
-	TouchPickupPadding = -2,
+	EatMinCellMass = 1,
+	TouchPickupPadding = 0,
 	PickupCoverage = 1, -- 1 = the whole pellet must be inside the receiving cell
 	-- Self-feed recovery was scaling gain down based on TOTAL player mass:
 	-- at high mass, feeding a small sibling gave ~5% of the pellet's mass,
@@ -348,10 +335,10 @@ Config.Ejected = {
 	-- MinScale = 1 so the receiving cell always gets the full transfer.
 	SelfRecoveryStartScore = 400000,
 	SelfRecoveryEndScore = 2400000,
-	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
+	SelfRecoveryMinScale = 0.5,
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 460, -- was 520; slightly slower so pellets don't overshoot cluster
-	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
+	Speed = 200,
+	DragPerSecond = 2,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -365,19 +352,19 @@ Config.Ejected = {
 	LifeSeconds = 30, -- was 10; ejected pellets stick around longer
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
-	OwnerReeatDelay = 0.4, -- was 0.15; source cell has to wait a bit before grabbing its own pellet, so it actually reaches sibling cells
-	LocalVisualMaxCellsPerShotTick = 16,
+	OwnerReeatDelay = 0.1,
+	LocalVisualMaxCellsPerShotTick = 32,
 	LocalVisualLifeSeconds = 1.25,
-	LocalVisualMinVisibleSeconds = 0.45,
+	LocalVisualMinVisibleSeconds = 0.08,
 	OwnerTrimRetainRadius = 1800,
 	MaxCount = 3000,
 	PerPlayerMaxCount = 384,
 	LoadPerPlayerMaxCount = 240,
 	HeavyLoadPerPlayerMaxCount = 160,
-	MaxCellsPerShotTick = 16,
-	LoadMaxCellsPerShotTick = 12,
-	HeavyLoadMaxCellsPerShotTick = 8,
-	FireHz = 10,
+	MaxCellsPerShotTick = 32,
+	LoadMaxCellsPerShotTick = 32,
+	HeavyLoadMaxCellsPerShotTick = 32,
+	FireHz = 17,
 	MaxEjectsPerStep = 6,
 	ConeDegrees = 0, -- zero spread; pellet flies exactly at cursor
 	-- Feeding a small cell inside a cluster: the owned cell nearest
@@ -385,13 +372,15 @@ Config.Ejected = {
 	-- receiver. Without this, surrounding big cells eat each other's
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
+	SelfFeedCenterRadius = 180,
+	SelfFeedVisualPellets = 2,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
 	-- has lived past LockedTargetTimeout seconds the lock releases
 	-- (so misses don't produce eternally-uneatable pellets).
 	LockPelletsToTarget = true,
-	LockedTargetTimeout = 3.0,
+	LockedTargetTimeout = 1.25,
 }
 
 Config.Network = {
@@ -407,7 +396,7 @@ Config.Network = {
 	StaticRefreshMaxInterval = 2.5,
 	MaxCellsPerSnapshot = 220,
 	MaxFoodPerSnapshot = 150,
-	MaxVirusesPerSnapshot = 16,
+	MaxVirusesPerSnapshot = 32,
 	MaxSpawnersPerSnapshot = 8,
 	MaxBarriersPerSnapshot = 6,
 	MaxEjectedPerSnapshot = 120,
@@ -456,10 +445,19 @@ Config.Render = {
 	OwnCellPredictionMaxLeadSeconds = 0.22,
 	OwnCellPredictionLeadExtraSeconds = 0.025,
 	OwnCellPredictionLeadScale = 1,
+	-- Maintain visible sibling separation while the server's recombination
+	-- cooldown is active. This is visual-only; server physics remains
+	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 12,
-	OwnCellVisualSeparationPasses = 2, -- restored to 2 for firm separation on normal splits
-	OwnCellVisualSeparationStrength = 0.75, -- was 0.55; firmer per-frame push
+	OwnCellVisualSeparationPasses = 2,
+	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
+	-- Client-only liquid surface response. Gaining mass sends several
+	-- translucent border rings inward without rotating or deforming skins.
+	LiquidRippleEnabled = true,
+	LiquidRippleDuration = 0.48,
+	LiquidRippleDepth = 0.18,
+	LiquidRippleMinMassGain = 2,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,
@@ -500,17 +498,18 @@ Config.Render = {
 	-- The launch follows its authoritative target immediately; smoothstep
 	-- controls the visual offset and radius growth without holding the child
 	-- on its parent.
-	SplitSpawnAnimationSeconds = 0.5,
+	SplitSpawnAnimationSeconds = 0.38,
 	SplitSpawnAnimationStartRadiusScale = 0.72,
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 24,
 	SplitSpawnAnimationTargetSharpness = 20,
 	SplitSpawnAnimationTargetLeadSeconds = 0.14,
-	SplitSpawnAnimationMaxOverrunSeconds = 0.12,
+	SplitSpawnAnimationMaxOverrunSeconds = 0.08,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
+	MergeAnimationSeconds = 0.42,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -545,7 +544,9 @@ Config.Admin = {
 
 Config.Tunables = {
 	-- Cell
-	{ path = "Cell.SplitImpulse",                label = "Split Impulse",             type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitImpulse",                label = "Split Distance",            type = "number", min = 100,  max = 2000,  step = 25 },
+	{ path = "Cell.SplitMaxBoost",               label = "Split Momentum Cap",        type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitBoostDragPerSecond",     label = "Split Braking (higher = shorter)", type = "number", min = 0.5, max = 10, step = 0.1 },
 	{ path = "Cell.SplitMinMass",                label = "Split Min Mass",            type = "number", min = 100,  max = 20000, step = 100, int = true },
 	{ path = "Cell.RecombineMinSeconds",         label = "Merge Cooldown Min (s)",    type = "number", min = 0.1,  max = 15,    step = 0.1 },
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
@@ -559,10 +560,14 @@ Config.Tunables = {
 
 	-- Player
 	{ path = "Player.MaxCells",                  label = "Max Cells",                 type = "number", min = 1,    max = 64,    step = 1, int = true },
-	{ path = "Player.BaseSpeed",                 label = "Base Speed",                type = "number", min = 50,   max = 1200,  step = 5 },
-	{ path = "Player.MinSpeed",                  label = "Min Speed",                 type = "number", min = 10,   max = 500,   step = 5 },
-	{ path = "Player.SpeedExponent",             label = "Speed Exponent",            type = "number", min = 0,    max = 2,     step = 0.01 },
-	{ path = "Player.DecayPerSecond",            label = "Decay / Second",            type = "number", min = 0,    max = 0.02,  step = 0.0001 },
+	{ path = "Player.BaseSpeed",                 label = "Small Cell Max Speed",      type = "number", min = 50,   max = 1200,  step = 5 },
+	{ path = "Player.MinSpeed",                  label = "Large Cell Min Speed",      type = "number", min = 10,   max = 500,   step = 5 },
+	{ path = "Player.SpeedExponent",             label = "Size Slowdown Strength",    type = "number", min = 0.05, max = 2,     step = 0.01 },
+	{ path = "Player.DecayPerSecond",            label = "Low Mass Decay Fraction / s", type = "number", min = 0,  max = 0.02, step = 0.0001 },
+	{ path = "Player.HighMassDecayStartMass",    label = "High Decay Start Mass",     type = "number", min = 1000, max = 10000000, step = 1000 },
+	{ path = "Player.HighMassDecayStartPerSecond", label = "Decay at Start Mass / s", type = "number", min = 0, max = 1000000, step = 100 },
+	{ path = "Player.HighMassDecayReferenceMass", label = "High Decay Reference Mass", type = "number", min = 1000, max = 10000000, step = 1000 },
+	{ path = "Player.HighMassDecayReferencePerSecond", label = "Decay at Reference / s", type = "number", min = 0, max = 1000000, step = 100 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
 
 	-- Food
@@ -570,6 +575,7 @@ Config.Tunables = {
 
 	-- Ejected (feed)
 	{ path = "Ejected.Mass",                     label = "Feed Pellet Mass",          type = "number", min = 10,   max = 1000,  step = 5 },
+	{ path = "Ejected.FireHz",                   label = "Feed Fire Rate (pellets/s)", type = "number", min = 1,    max = 30,    step = 1 },
 	{ path = "Ejected.Speed",                    label = "Feed Pellet Speed",         type = "number", min = 100,  max = 1500,  step = 10 },
 	{ path = "Ejected.DragPerSecond",            label = "Feed Pellet Drag / s",      type = "number", min = 0,    max = 10,    step = 0.1 },
 	{ path = "Ejected.LifeSeconds",              label = "Feed Pellet Life (s)",      type = "number", min = 1,    max = 60,    step = 0.5 },

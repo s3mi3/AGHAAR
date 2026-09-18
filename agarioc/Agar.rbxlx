@@ -2198,14 +2198,48 @@ local function ensureSerrations(frame: Frame, parts)
 		tooth.AnchorPoint = Vector2.new(0.5, 0.5)
 		tooth.BorderSizePixel = 0
 		tooth.Position = UDim2.fromScale(
-			0.5 + math.cos(angle) * 0.43,
-			0.5 + math.sin(angle) * 0.43
+			0.5 + math.cos(angle) * 0.48,
+			0.5 + math.sin(angle) * 0.48
 		)
 		tooth.Rotation = math.deg(angle) + 45
-		tooth.Size = UDim2.fromScale(0.18, 0.18)
+		tooth.Size = UDim2.fromScale(0.2, 0.2)
 		tooth.Visible = false
 		tooth.Parent = frame
 		parts.serrations[index] = tooth
+	end
+end
+
+local function ensureLiquidRipples(frame: Frame, parts)
+	if parts.liquidRipples then
+		return
+	end
+
+	parts.liquidRipples = {}
+	for index = 1, 3 do
+		local ring = Instance.new("Frame")
+		ring.Name = "LiquidRipple"
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		ring.BackgroundTransparency = 1
+		ring.BorderSizePixel = 0
+		ring.Position = UDim2.fromScale(0.5, 0.5)
+		ring.Size = UDim2.fromScale(1, 1)
+		ring.Visible = false
+		ring.Parent = frame
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = ring
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(255, 255, 255)
+		stroke.Thickness = 1.5
+		stroke.Transparency = 1
+		stroke.Parent = ring
+
+		parts.liquidRipples[index] = {
+			frame = ring,
+			stroke = stroke,
+		}
 	end
 end
 
@@ -2215,6 +2249,7 @@ local function resetFrame(frame: Frame, parts)
 	frame.BackgroundTransparency = 0
 	frame.Position = UDim2.fromOffset(-100000, -100000)
 	frame.Size = UDim2.fromOffset(1, 1)
+	frame.Rotation = 0
 	parts.lastZIndex = nil
 
 	if parts.frameCorner then
@@ -2223,6 +2258,8 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.skin then
 		parts.skin.Visible = false
+		parts.skin.Rotation = 0
+		parts.skin.ScaleType = Enum.ScaleType.Crop
 		parts.skin.Image = ""
 		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.skin.ImageTransparency = 0
@@ -2235,6 +2272,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.avatar then
 		parts.avatar.Visible = false
+		parts.avatar.Rotation = 0
 		parts.avatar.Image = ""
 		parts.avatar.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.avatar.ImageTransparency = 0
@@ -2248,10 +2286,16 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.labelStack then
 		parts.labelStack.Visible = false
+		parts.labelStack.Rotation = 0
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
 			tooth.Visible = false
+		end
+	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.Visible = false
 		end
 	end
 end
@@ -2279,7 +2323,12 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
-			tooth.ZIndex = zIndex + 1
+			tooth.ZIndex = zIndex
+		end
+	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.ZIndex = zIndex + 3
 		end
 	end
 end
@@ -2288,7 +2337,8 @@ local function makeCircle(parent: Instance, zIndex: number)
 	local frame = Instance.new("Frame")
 	frame.AnchorPoint = Vector2.new(0.5, 0.5)
 	frame.BorderSizePixel = 0
-	frame.ClipsDescendants = true
+	-- Serration teeth extend beyond the circular body.
+	frame.ClipsDescendants = false
 	frame.ZIndex = zIndex
 	frame.Visible = false
 	frame.Parent = parent
@@ -2429,6 +2479,9 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	if options and options.serrated then
 		ensureSerrations(frame, parts)
 	end
+	if options and options.liquidRippleProgress then
+		ensureLiquidRipples(frame, parts)
+	end
 	local zIndex = options and options.zIndex or self.zIndex
 	applyZIndex(frame, parts, zIndex)
 	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
@@ -2440,6 +2493,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	frame.Position = UDim2.fromOffset(x, y)
 	frame.Size = UDim2.fromOffset(width, height)
+	setCached(parts, "frameRotation", frame, "Rotation", 0)
 
 	if parts.stroke then
 		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
@@ -2459,6 +2513,8 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 
 	if options then
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -2471,6 +2527,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			local overlayScale = options.overlayScale or 1
 			local overlaySize = if overlayScale &lt; 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
@@ -2492,6 +2549,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius &gt;= 18)
 			if parts.nameLabel then
 				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
@@ -2502,12 +2560,15 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 	else
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", false)
 			setCached(parts, "skinImage", parts.skin, "Image", "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
 			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", 0)
 		end
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
 			setCached(parts, "avatarImage", parts.avatar, "Image", "")
 			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", Color3.fromRGB(255, 255, 255))
@@ -2515,7 +2576,31 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", Enum.ScaleType.Crop)
 		end
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
+		end
+	end
+
+	if parts.liquidRipples then
+		local progress = options and options.liquidRippleProgress
+		local depth = math.clamp(options and options.liquidRippleDepth or 0.18, 0, 0.5)
+		for index, ripple in parts.liquidRipples do
+			local delay = (index - 1) * 0.14
+			local waveProgress = if progress then (progress - delay) / math.max(1 - delay, 0.01) else -1
+			local visible = waveProgress &gt;= 0 and waveProgress &lt; 1
+			setCached(parts, "liquidVisible" .. index, ripple.frame, "Visible", visible)
+			if visible then
+				waveProgress = math.clamp(waveProgress, 0, 1)
+				local sizeScale = 1 - depth * waveProgress
+				ripple.frame.Size = UDim2.fromScale(sizeScale, sizeScale)
+				setCached(
+					parts,
+					"liquidTransparency" .. index,
+					ripple.stroke,
+					"Transparency",
+					0.18 + waveProgress * 0.82
+				)
+			end
 		end
 	end
 
@@ -2747,10 +2832,10 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			self.ejectToken += 1
 			self:_predictEject()
 		elseif input.KeyCode == Enum.KeyCode.R then
-			-- Add 3 children from the biggest cell (4 total from one cell).
+			-- Three full Space-style generations; every eligible cell divides.
 			self.doubleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.E then
-			-- Add 2 children from the biggest cell (3 total from one cell).
+			-- Two full Space-style generations; every eligible cell divides.
 			self.tripleSplitToken += 1
 		elseif input.KeyCode == Enum.KeyCode.F then
 			-- Freeze toggle (Config.Freeze). Mirror the toggle locally so
@@ -3124,7 +3209,7 @@ local Renderer = {}
 Renderer.__index = Renderer
 local FAST_OWN_CELL_ROW_BYTES = 20
 local FAST_REMOTE_CELL_ROW_BYTES = 28
-local FAST_EJECTED_ROW_BYTES = 21
+local FAST_EJECTED_ROW_BYTES = 29
 local DEFAULT_AVATAR_DISPLAY_MODE = "face"
 local AVATAR_THUMBNAIL_TYPES = {
 	face = Enum.ThumbnailType.HeadShot,
@@ -3197,7 +3282,7 @@ local function splitImpulseForMass(mass: number?): number
 	return math.min(Config.Cell.SplitImpulse * scale, Config.Cell.SplitMaxBoost or math.huge)
 end
 
-local function canMassFireEjected(mass: number?): boolean
+local function canMassFireEjected(mass: number?, frozen: boolean?): boolean
 	if not mass then
 		return false
 	end
@@ -3207,12 +3292,34 @@ local function canMassFireEjected(mass: number?): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = if frozen
+		then math.max(Config.Ejected.FrozenCost or Config.Ejected.Cost or 0, 0)
+		else math.max(Config.Ejected.Cost or 0, 0)
 	return cost &lt;= 0 or mass &gt; cost
 end
 
 local function zIndexForRadius(radius: number): number
 	return 3 + math.clamp(math.floor(radius / 24 + 0.5), 0, 14)
+end
+
+local function movingPointTouchesCircle(state, center: Vector2, radius: number): boolean
+	local current = state.displayPos
+	if (current - center):Dot(current - center) &lt;= radius * radius then
+		return true
+	end
+	local previous = state.previousDisplayPos
+	if not previous then
+		return false
+	end
+	local travel = current - previous
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared &lt;= 0.000001 then
+		return false
+	end
+	local t = math.clamp((center - previous):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previous + travel * t
+	local delta = closest - center
+	return delta:Dot(delta) &lt;= radius * radius
 end
 
 local function serverTimeNow(): number
@@ -3351,7 +3458,7 @@ end
 
 local function decodeEjectedBuffer(payload)
 	if typeof(payload) ~= "buffer" then
-		return expandPackedRows(payload, 4)
+		return expandPackedRows(payload, 6)
 	end
 
 	local rows = {}
@@ -3364,6 +3471,8 @@ local function decodeEjectedBuffer(payload)
 			buffer.readf32(payload, offset + 4),
 			buffer.readf32(payload, offset + 8),
 			if payloadType == 1 then ownerOrColor else colorPayloadFromPacked(ownerOrColor),
+			buffer.readf32(payload, offset + 21),
+			buffer.readf32(payload, offset + 25),
 		}
 		rowIndex += 1
 	end
@@ -3739,7 +3848,13 @@ end
 function Renderer:_removePredictedEjectedNear(pos: Vector2)
 	local bestId = nil
 	local bestDistance = math.huge
-	local maxDistance = math.max(Config.Ejected.Radius * 6, 54)
+	-- Allow for network transit while matching the authoritative pellet
+	-- to its local prediction. A failed match renders both as two streams.
+	local maxDistance = math.max(
+		Config.Ejected.Radius * 6,
+		Config.Ejected.Speed * 0.4,
+		54
+	)
 	local maxDistanceSquared = maxDistance * maxDistance
 	for id, state in self.ejectedStates do
 		if state.predicted == true then
@@ -3782,7 +3897,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 	for id, state in self.cellStates do
 		if state.isOwn
 			and state.confirmed
-			and canMassFireEjected(state.mass)
+			and canMassFireEjected(state.mass, self.localFrozen)
 		then
 			eligible[#eligible + 1] = {
 				id = id,
@@ -3797,10 +3912,50 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		return a.id &lt; b.id
 	end)
 
+	-- Self-feed only when the cursor is near the group center or actually
+	-- inside one of the player's cells. Otherwise every cell fires outward.
+	local targetCell = nil
+	local cursorMaySelfFeed = false
+	if Config.Ejected.SkipTargetCell and typeof(target) == "Vector2" then
+		local center = self.predictedOwnCenter
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = center ~= nil and (target - center).Magnitude &lt;= centerRadius
+		if not cursorMaySelfFeed then
+			for _, entry in eligible do
+				if (target - entry.state.displayPos).Magnitude &lt;= entry.state.radius then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed and #eligible &gt; 1 then
+		local targetIndex = nil
+		local bestDistanceSquared = math.huge
+		for index, entry in eligible do
+			local delta = target - entry.state.displayPos
+			local distanceSquared = delta:Dot(delta)
+			if distanceSquared &lt; bestDistanceSquared then
+				bestDistanceSquared = distanceSquared
+				targetIndex = index
+			end
+		end
+		if targetIndex then
+			targetCell = eligible[targetIndex].state
+			table.remove(eligible, targetIndex)
+		end
+	end
+
 	local now = os.clock()
 	local eligibleCount = #eligible
 	local visualLimit = Config.Ejected.LocalVisualMaxCellsPerShotTick or Config.Ejected.MaxCellsPerShotTick or eligibleCount
-	local perTickLimit = math.min(eligibleCount, visualLimit)
+	-- Server spreads the combined self-feed gain over a small visual group.
+	local perTickLimit = if targetCell
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, visualLimit)
 	local startIndex = (self.predictedEjectCycleOffset % eligibleCount) + 1
 	for step = 0, perTickLimit - 1 do
 		local entry = eligible[((startIndex - 1 + step) % eligibleCount) + 1]
@@ -3809,7 +3964,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		-- world position. Falls back to the shared move-aim direction
 		-- when the target is missing or degenerate (cursor on cell).
 		local dir = fallbackDir
-		if typeof(target) == "Vector2" then
+		if targetCell then
+			local delta = targetCell.displayPos - cell.displayPos
+			if delta.Magnitude &gt; 0.001 then
+				dir = delta.Unit
+			end
+		elseif typeof(target) == "Vector2" then
 			local delta = target - cell.displayPos
 			if delta.Magnitude &gt; 0.001 then
 				dir = delta.Unit
@@ -3825,6 +3985,12 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		)
 		local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
 		local pos = self:_clampToWorld(cell.displayPos + dir * spawnDistance, Config.Ejected.Radius)
+		local inheritedVelocity = Vector2.zero
+		if not self.localFrozen then
+			local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, cell.displayPos, cell.radius)
+			inheritedVelocity = moveDir * speedForMass(cell.mass) * moveScale
+				+ (cell.splitVisualBoost or Vector2.zero)
+		end
 		local id = self.nextPredictedEjectedId
 		self.nextPredictedEjectedId -= 1
 		if self.nextPredictedEjectedId &lt; -1000000 then
@@ -3834,7 +4000,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		self.ejectedStates[id] = {
 			displayPos = pos,
 			targetPos = pos,
-			velocity = shotDir * Config.Ejected.Speed,
+			velocity = shotDir * Config.Ejected.Speed + inheritedVelocity,
 			radius = Config.Ejected.Radius,
 			targetRadius = Config.Ejected.Radius,
 			color = cell.color or Config.Render.EjectedColor,
@@ -3845,6 +4011,8 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 			receivedAt = now,
 			extrapolate = true,
 			predicted = true,
+			sourceCell = cell,
+			targetCell = targetCell,
 			worldPadding = Config.Ejected.Radius,
 			consumeAfter = now + math.max(Config.Ejected.OwnerReeatDelay or 0, Config.Ejected.LocalVisualMinVisibleSeconds or 0),
 			expiresAt = now + (Config.Ejected.LocalVisualLifeSeconds or 0.8),
@@ -3953,7 +4121,22 @@ function Renderer:setSnapshot(snapshot)
 			if packed[4] == snapshot.you then
 				self:_removePredictedEjectedNear(Vector2.new(packed[2], packed[3]))
 			end
-			self:_syncEntity(self.ejectedStates, packed[1], Vector2.new(packed[2], packed[3]), Config.Ejected.Radius, nil, self:_ejectedColor(packed[4]), nil, serial, receivedAt, false, "ejected")
+			local authoritativeVelocity = if typeof(packed[5]) == "number" and typeof(packed[6]) == "number"
+				then Vector2.new(packed[5], packed[6])
+				else nil
+			self:_syncEntity(
+				self.ejectedStates,
+				packed[1],
+				Vector2.new(packed[2], packed[3]),
+				Config.Ejected.Radius,
+				nil,
+				self:_ejectedColor(packed[4]),
+				{ velocity = authoritativeVelocity },
+				serial,
+				receivedAt,
+				false,
+				"ejected"
+			)
 		end
 
 		for _, packed in snapshot.cells or {} do
@@ -4124,7 +4307,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 	end
 
 	local now = os.clock()
-	local duration = math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 	for _, id in ids do
 		local state = self.cellStates[id]
 		if not state then
@@ -4159,10 +4341,18 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 		end
 
 		if bestTarget then
+			local isMerge = sourceOwner ~= nil
+				and bestTarget.extra
+				and bestTarget.extra.ownerUserId == sourceOwner
+			local duration = if isMerge
+				then math.max(Config.Render.MergeAnimationSeconds or 0.42, 0.01)
+				else math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 			state.consumeTarget = bestTarget
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
+			state.consumeStartPos = state.displayPos
 			state.consumeStartRadius = state.radius
+			state.consumeIsMerge = isMerge
 			state.extrapolate = false
 			state.isOwn = false
 		else
@@ -4190,7 +4380,7 @@ function Renderer:handleShopMessage(payload)
 	end
 end
 
-function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra)
+function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: number, extra, serial: number)
 	local renderConfig = Config.Render
 	if renderConfig.SplitSpawnAnimationEnabled == false or typeof(extra) ~= "table" then
 		return nil
@@ -4209,10 +4399,12 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 	local bestOrigin = nil
 	local bestSource = nil
 	local bestDistanceSquared = math.huge
+	local bestIsMassDropSource = false
 	for otherId, state in self.cellStates do
+		local isMassDropSource = state.lastMassDropSerial == serial
 		if otherId ~= id
 			and state.confirmed == true
-			and not isSplitSpawnAnimating(state)
+			and (not isSplitSpawnAnimating(state) or isMassDropSource)
 			and state.extra
 			and state.extra.ownerUserId == ownerUserId
 		then
@@ -4220,10 +4412,16 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 			if origin then
 				local delta = pos - origin
 				local distanceSquared = delta:Dot(delta)
-				if distanceSquared &lt;= maxDistanceSquared and distanceSquared &lt; bestDistanceSquared then
+				if distanceSquared &lt;= maxDistanceSquared
+					and (
+						(isMassDropSource and not bestIsMassDropSource)
+						or (isMassDropSource == bestIsMassDropSource and distanceSquared &lt; bestDistanceSquared)
+					)
+				then
 					bestDistanceSquared = distanceSquared
 					bestOrigin = origin
 					bestSource = state
+					bestIsMassDropSource = isMassDropSource
 				end
 			end
 		end
@@ -4242,21 +4440,26 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local splitVisualBoost = nil
 		if kind == "cell" then
 			local origin
-			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra)
+			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
 			if origin then
 				displayPos = origin
 				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
 				local launchDelta = pos - origin
 				local launchDir = if launchDelta.Magnitude &gt; 0.001 then launchDelta.Unit else self.localMoveAim
-				if not self.localFrozen then
-					splitVisualBoost = launchDir * splitImpulseForMass(mass)
+				local boostScale = if self.localFrozen
+					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+					else 1
+				if boostScale &gt; 0 then
+					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
 				end
 			end
 		end
 		state = {
 			displayPos = displayPos,
 			targetPos = pos,
-			velocity = Vector2.zero,
+			velocity = if kind == "ejected" and extra and extra.velocity
+				then extra.velocity
+				else Vector2.zero,
 			radius = displayRadius,
 			targetRadius = radius,
 			receivedAt = receivedAt,
@@ -4275,6 +4478,20 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		}
 		states[id] = state
 	else
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
+			and mass - state.mass &gt;= math.max(Config.Render.LiquidRippleMinMassGain or 2, 0)
+		then
+			state.liquidRippleStartedAt = os.clock()
+		end
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
+			and mass &lt; state.mass * 0.8
+		then
+			state.lastMassDropSerial = serial
+		end
 		if isStatic then
 			local tolerance = Config.Render.StaticPositionTolerance or 2
 			local staticPos = state.staticPos or state.targetPos
@@ -4303,7 +4520,15 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		else
 			local elapsed = math.max(receivedAt - (state.receivedAt or receivedAt), 1 / Config.Simulation.NetworkHz)
 			state.velocity = (pos - state.targetPos) / elapsed
-			if kind == "cell" and extra and extra.isOwn and state.splitVisualBoost then
+			if kind == "ejected" and extra and extra.velocity then
+				state.velocity = extra.velocity
+			end
+			if kind == "cell"
+				and extra
+				and extra.isOwn
+				and state.splitVisualBoost
+				and not self.localFrozen
+			then
 				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale
 				local observedBoost = state.velocity - baseVelocity
@@ -4684,7 +4909,13 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 
 	for _, cellState in self.cellStates do
 		if cellState.mass and cellState.mass &gt;= (Config.Ejected.EatMinCellMass or 18) then
-			if not cellState.isOwn or now &gt;= (state.consumeAfter or 0) then
+			if cellState.isOwn and state.targetCell and cellState ~= state.targetCell then
+				continue
+			end
+			local waitingForSource = cellState.isOwn
+				and cellState == state.sourceCell
+				and now &lt; (state.consumeAfter or 0)
+			if not waitingForSource then
 				-- Own cells consume pellets by center-in-disc (matches
 				-- the server rule in ejectedTouchPickupDistance).
 				-- Enemies still use edge-to-edge touch.
@@ -4693,9 +4924,10 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 					local padding = Config.Ejected.TouchPickupPadding or 0
 					local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 					local pelletRadius = state.radius or Config.Ejected.Radius
-					local touchDistance = math.max(targetRadius - pelletRadius * coverage + padding, 0)
-					local delta = state.displayPos - cellState.displayPos
-					if delta:Dot(delta) &lt;= touchDistance * touchDistance then
+					local touchDistance = if state.targetCell == cellState
+						then math.max(targetRadius + padding, 0)
+						else math.max(targetRadius - pelletRadius * coverage + padding, 0)
+					if movingPointTouchesCircle(state, cellState.displayPos, touchDistance) then
 						return true
 					end
 				elseif self:_predictedEjectedTouchesCircle(state, cellState, 0) then
@@ -4710,6 +4942,7 @@ end
 
 function Renderer:_stepPredictedEjectedState(state, dt: number)
 	local velocity = state.velocity or Vector2.zero
+	state.previousDisplayPos = state.displayPos
 	local nextPos = state.displayPos + velocity * dt
 	local clamped = self:_clampToWorld(nextPos, state.worldPadding or Config.Ejected.Radius)
 	if clamped.X ~= nextPos.X then
@@ -4873,9 +5106,16 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local progress = math.clamp((now - (state.consumeStartedAt or now)) / duration, 0, 1)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
-			local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
-			state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
-			state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			if state.consumeIsMerge then
+				local easedProgress = progress * progress * (3 - 2 * progress)
+				local startPos = state.consumeStartPos or state.displayPos
+				state.displayPos = startPos:Lerp(targetPos, easedProgress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - easedProgress), 0)
+			else
+				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
+				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
+			end
 			if now &gt;= state.consumeUntil then
 				states[id] = nil
 				self.cellPool:release(id)
@@ -5187,12 +5427,18 @@ end
 
 function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: number, padding: number?): boolean
 	local pickupRadius = state.radius or state.targetRadius or 0
+	local now = os.clock()
 	for _, cell in candidates do
-		if cell.mass &gt;= minMass then
+		if state.targetCell and cell ~= state.targetCell then
+			continue
+		end
+		local waitingForSource = cell == state.sourceCell and now &lt; (state.consumeAfter or 0)
+		if cell.mass &gt;= minMass and not waitingForSource then
 			local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
-			local touchDistance = math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
-			local delta = cell.displayPos - state.displayPos
-			if delta:Dot(delta) &lt;= touchDistance * touchDistance then
+			local touchDistance = if state.targetCell == cell
+				then math.max(cell.radius + (padding or 0), 0)
+				else math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
+			if movingPointTouchesCircle(state, cell.displayPos, touchDistance) then
 				return true
 			end
 		end
@@ -5262,6 +5508,31 @@ function Renderer:_updateHud(dt: number)
 	end
 end
 
+function Renderer:_applyLiquidBorderAnimation(state, drawOptions)
+	-- The cell body and artwork stay perfectly still. A mass gain launches
+	-- translucent rings from the edge toward the center like disturbed water.
+	drawOptions.width = nil
+	drawOptions.height = nil
+	drawOptions.rotation = nil
+	drawOptions.deformContent = nil
+
+	local startedAt = state.liquidRippleStartedAt
+	local duration = math.max(Config.Render.LiquidRippleDuration or 0.48, 0.01)
+	if Config.Render.LiquidRippleEnabled == false or not startedAt then
+		drawOptions.liquidRippleProgress = nil
+		return
+	end
+
+	local progress = (os.clock() - startedAt) / duration
+	if progress &gt;= 1 then
+		state.liquidRippleStartedAt = nil
+		drawOptions.liquidRippleProgress = nil
+		return
+	end
+	drawOptions.liquidRippleProgress = math.clamp(progress, 0, 1)
+	drawOptions.liquidRippleDepth = Config.Render.LiquidRippleDepth or 0.18
+end
+
 function Renderer:render(dt: number?)
 	dt = dt or 1 / 60
 	self:_drawGrid()
@@ -5276,10 +5547,8 @@ function Renderer:render(dt: number?)
 	self.cellPool:begin()
 
 	self:_drawSimpleStates(self.foodPool, 100000000, self.foodStates, Config.Render.FoodColor, nil, Config.Render.FoodZIndex or 3)
-	local now = os.clock()
 	self:_drawSimpleStates(self.ejectedPool, 200000000, self.ejectedStates, Config.Render.EjectedColor, function(state)
 		return state.predicted == true
-			and now &gt;= (state.consumeAfter or 0)
 			and self:_ownCellCanTouchPickupFromList(
 				ownEatCandidates,
 				state,
@@ -5293,7 +5562,13 @@ function Renderer:render(dt: number?)
 		then
 			local screen = self.camera:worldToScreen(state.displayPos)
 			local screenRadius = math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
-			self.virusDrawOptions.zIndex = math.max(zIndexForRadius(state.radius), Config.Render.ObjectMinZIndex or 6)
+			-- Match the cell radius-based layer scale. A cell smaller than
+			-- the virus is painted underneath it, while a cell large enough
+			-- to cover and eat the virus is painted above it.
+			self.virusDrawOptions.zIndex = math.max(
+				math.floor(state.radius),
+				Config.Render.ObjectMinZIndex or 6
+			)
 			self.virusPool:draw(300000000 + id, screen, screenRadius, Config.Render.VirusColor, self.virusDrawOptions)
 		end
 	end
@@ -5367,6 +5642,7 @@ function Renderer:render(dt: number?)
 				drawOptions.image = avatarImage
 				drawOptions.imageScaleType = avatarScaleType
 			end
+			self:_applyLiquidBorderAnimation(state, drawOptions)
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
 	end
@@ -6679,8 +6955,12 @@ Config.Player = {
 	InitialMass = 1000,
 	MinDecayMass = 140,
 	DecayPerSecond = 0.0004, -- was 0.001; slower shrink so mass sticks around
-	BaseSpeed = 335,
-	MinSpeed = 82,
+	HighMassDecayStartMass = 50000,
+	HighMassDecayStartPerSecond = 500,
+	HighMassDecayReferenceMass = 100000,
+	HighMassDecayReferencePerSecond = 2000,
+	BaseSpeed = 275,
+	MinSpeed = 75,
 	SpeedExponent = 0.42,
 	SpawnInvulnSeconds = 1.2,
 	MovementDeadZone = 10,
@@ -6704,21 +6984,25 @@ Config.Cell = {
 	RecombineSeconds = 12, -- legacy fallback; see RecombineMin/Max below
 	-- Mass-scaled recombine: small cells merge back quickly, big cells wait.
 	-- Formula: clamp(Min + (mass / ScaleMass) * PerScaleMass, Min, Max).
-	RecombineMinSeconds = 1.5, -- floor for very small cells
-	RecombineMaxSeconds = 5, -- cap; even the biggest cells wait at most this long
+	RecombineMinSeconds = 2, -- floor for very small cells
+	RecombineMaxSeconds = 8, -- cap for the biggest cells
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
-	SplitMinMass = 1000,
-	SplitImpulse = 850, -- was 600; splits actually spread now
+	SplitMinMass = 100,
+	SplitImpulse = 700,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
-	SplitInheritedBoostScale = 0.85,
-	SplitMaxBoost = 1650,
-	SplitBoostDragPerSecond = 1.9,
+	SplitInheritedBoostScale = 0.65,
+	SplitMaxBoost = 900,
+	SplitBoostDragPerSecond = 2.4,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
 	SplitSpawnOffsetRadiusScale = 0.35,
+	-- Frozen splits stay motionless after spawning, but appear a small
+	-- distance toward the cursor so the split still has direction.
+	FrozenSplitNudgeRadiusScale = 0.55,
+	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
 	SplitPushMaxOverlapPerStep = 6,
@@ -6732,34 +7016,30 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
-	-- MULTI-SPLIT: add a fixed number of pieces from the biggest cell.
-	-- E adds 2 children (3 total from one cell); R adds 3 (4 total).
+	-- E repeats the normal Space split for every eligible cell twice.
+	-- R repeats it three times.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
-	DoubleSplitPieces = 4, -- R
-	TripleSplitPieces = 3, -- E
+	RSplitGenerations = 3,
+	ESplitGenerations = 2,
 
 	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
 	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
 	-- speed * ratio) so they can't sprint away from the pack.
 	-- CohesionStrength (0..1) adds a gentle pull toward the group's
 	-- center of mass when a cell drifts far from it. 0 disables.
-	-- CohesionStrength is now 0: the constant tug toward the centroid
-	-- was reading as "snappy / pulling together", especially the
-	-- instant you froze. Cluster speed cap alone keeps the pack tight
-	-- without any active pulling force.
+	-- Keep disabled so sibling cells do not actively bunch together
+	-- before their recombination timer expires.
 	-- Ratio raised from 1.15 to 1.6 so small cells can catch up to
 	-- the big cell instead of feeling "roped" behind it.
 	ClusterMaxSpeedRatio = 1.6,
 	CohesionStrength = 0,
 
-	-- All cells use the same camera-center aim vector so a split travels in
-	-- parallel lanes instead of converging side-to-side on the cursor.
-	-- These small fans preserve a little organic lateral movement.
-	SplitGroupFanRadians = 0.008,
-	MultiSplitFanRadians = 0.014,
+	-- Splits aim directly from each source cell at the cursor.
+	SplitGroupFanRadians = 0,
+	MultiSplitFanRadians = 0,
 	MultiSplitStaggerRadiusScale = 0.18,
 
 	-- ==================================================================
@@ -6786,7 +7066,7 @@ Config.Cell = {
 	-- Set CannibalizeEnabled = false to turn the mechanic off entirely.
 	-- ==================================================================
 	CannibalizeEnabled = true,
-	CannibalizeSecondsSinceSplit = 5.0, -- was 2.0; wait past recombine window
+	CannibalizeSecondsSinceSplit = 8,
 	CannibalizeMassRatio = 4.0,         -- was 2.0; require a real size gap
 	CannibalizeOverlap = 0.85,
 }
@@ -6829,20 +7109,25 @@ Config.Food = {
 }
 
 Config.Virus = {
-	TargetCount = 60, -- was 28; scaled with bigger map
-	Mass = 500,
-	Radius = 76,
+	-- Keep enough hazards in the enlarged world that several are normally
+	-- visible around a player instead of being lost between camera regions.
+	TargetCount = 120,
+	Mass = 300,
+	Radius = 14,
 	EatSplitMinMass = 2000,
 	EatOverlap = 0.5,
-	-- If false, eating a virus just absorbs its mass without bursting
-	-- your cell into pieces. Set to true to restore agar.io behavior.
-	SplitOnEat = false,
+	-- Below the 32-cell cap a virus bursts the eater into more pieces.
+	-- At the cap, the virus is absorbed and its mass is gained instead.
+	SplitOnEat = true,
 	MaxBurstPieces = 8,
-	BumpVelocityTransfer = 1,
-	BumpMinSpeed = 300,
-	BumpMaxSpeed = 650,
-	BumpNudge = 10,
-	DragPerSecond = 0.8,
+	NearMergeWindowSeconds = 1,
+	NearMergeDistanceScale = 1.25,
+	NearMergeCannibalizePieces = 3,
+	BumpVelocityTransfer = 0.7,
+	BumpMinSpeed = 140,
+	BumpMaxSpeed = 300,
+	BumpNudge = 5,
+	DragPerSecond = 1.8,
 	WallBounceScale = 0.25,
 	StopSpeed = 10,
 	DynamicSnapshotMinSpeed = 8,
@@ -6913,33 +7198,13 @@ Config.Freeze = {
 	Enabled = true,
 	Debounce = 0.3, -- was 0.15; longer window kills F-spam scatter
 	Cost = 0,
-	-- Unfreeze grace: after releasing freeze, the server dampens
-	-- same-player push resolution so a stack of overlapping cells
-	-- drifts apart smoothly instead of exploding outward in one step.
-	-- The grace window is short by design — the actual outward motion
-	-- comes from ReleaseImpulse below, which gives cells a radial
-	-- boost from the group centroid. Grace just prevents the tiny
-	-- residual overlap from popping when cells finally separate.
-	UnfreezeGraceSeconds = 1.2, -- was 6.0; shorter, since ReleaseImpulse handles the motion
-	UnfreezeGraceStrength = 0.15, -- was 0.01; not so aggressively suppressed
-	UnfreezeGraceCurveExponent = 1.8, -- was 3.2; gentler ramp
-	UnfreezeMaxOverlapPerPass = 4, -- was 1.2; not the bottleneck anymore
+	-- Overlapping frozen cells are separated gradually after release.
+	-- Their boost is cleared by the server; there is no radial release fan.
+	UnfreezeGraceSeconds = 2.5,
+	UnfreezeGraceStrength = 0.03,
+	UnfreezeGraceCurveExponent = 2.2,
+	UnfreezeMaxOverlapPerPass = 2,
 	UnfreezePushPasses = 1,
-	-- Release fan impulse: on unfreeze, every owned cell gets a
-	-- radial outward boost from the group centroid (UNIFORM per cell,
-	-- not mass-scaled). Total cell.boost is CAPPED to this value so
-	-- F-spam can't stack impulses. ReleaseMinHoldSeconds means an
-	-- instant re-toggle (freeze -&gt; unfreeze within a fraction of a
-	-- second) doesn't emit any impulse at all.
-	ReleaseImpulse = 220, -- was 320; softer fan-out (also assigned, not added, so no stacking)
-	ReleaseImpulseMassExponent = 0.28, -- kept for backward compat; no longer used
-	ReleaseImpulseMinScale = 0.4,       -- kept for backward compat; no longer used
-	ReleaseMinHoldSeconds = 0.4,        -- was 0.25; tap-F does nothing, longer hold to fan out
-	-- When cells are at (nearly) the same point after unfreeze, give
-	-- them a tiny deterministic jitter so the push has a direction to
-	-- resolve against — otherwise they'd sit on top of each other and
-	-- then suddenly pop when the grace ends.
-	UnfreezeJitterDistance = 0.4,
 }
 
 Config.Input = {
@@ -6962,17 +7227,15 @@ Config.Input = {
 Config.Ejected = {
 	-- Feeding always transfers this fixed amount; it is not derived from the
 	-- firing player's largest cell.
-	Mass = 100,
-	PickupMassMultiplier = 1, -- was 2; each pellet now gives 100 mass, not 200
-	Radius = 12,
+	Mass = 10,
+	PickupMassMultiplier = 1,
+	Radius = 4,
 	NozzleOffset = 2,
-	-- Cost was 0, so firing was minting mass out of thin air. Now the
-	-- source cell loses exactly what the pellet carries, so self-feed is
-	-- a true mass transfer (big -&gt; small) instead of "big gets bigger".
-	Cost = 100,
+	Cost = 0,
+	FrozenCost = 10,
 	MinFireMass = 0,
-	EatMinCellMass = 18,
-	TouchPickupPadding = -2,
+	EatMinCellMass = 1,
+	TouchPickupPadding = 0,
 	PickupCoverage = 1, -- 1 = the whole pellet must be inside the receiving cell
 	-- Self-feed recovery was scaling gain down based on TOTAL player mass:
 	-- at high mass, feeding a small sibling gave ~5% of the pellet's mass,
@@ -6980,10 +7243,10 @@ Config.Ejected = {
 	-- MinScale = 1 so the receiving cell always gets the full transfer.
 	SelfRecoveryStartScore = 400000,
 	SelfRecoveryEndScore = 2400000,
-	SelfRecoveryMinScale = 1, -- was 0.05; small pieces couldn't grow when total mass was high
+	SelfRecoveryMinScale = 0.5,
 	SelfRecoveryCurveExponent = 0.7,
-	Speed = 460, -- was 520; slightly slower so pellets don't overshoot cluster
-	DragPerSecond = 1.6, -- was 3.5; pellets glide visibly to the receiving cell instead of blipping
+	Speed = 200,
+	DragPerSecond = 2,
 	WallBounceScale = 0.22,
 	CollisionEnabled = false,
 	CollisionMinSpeed = 28,
@@ -6997,19 +7260,19 @@ Config.Ejected = {
 	LifeSeconds = 30, -- was 10; ejected pellets stick around longer
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
-	OwnerReeatDelay = 0.4, -- was 0.15; source cell has to wait a bit before grabbing its own pellet, so it actually reaches sibling cells
-	LocalVisualMaxCellsPerShotTick = 16,
+	OwnerReeatDelay = 0.1,
+	LocalVisualMaxCellsPerShotTick = 32,
 	LocalVisualLifeSeconds = 1.25,
-	LocalVisualMinVisibleSeconds = 0.45,
+	LocalVisualMinVisibleSeconds = 0.08,
 	OwnerTrimRetainRadius = 1800,
 	MaxCount = 3000,
 	PerPlayerMaxCount = 384,
 	LoadPerPlayerMaxCount = 240,
 	HeavyLoadPerPlayerMaxCount = 160,
-	MaxCellsPerShotTick = 16,
-	LoadMaxCellsPerShotTick = 12,
-	HeavyLoadMaxCellsPerShotTick = 8,
-	FireHz = 10,
+	MaxCellsPerShotTick = 32,
+	LoadMaxCellsPerShotTick = 32,
+	HeavyLoadMaxCellsPerShotTick = 32,
+	FireHz = 17,
 	MaxEjectsPerStep = 6,
 	ConeDegrees = 0, -- zero spread; pellet flies exactly at cursor
 	-- Feeding a small cell inside a cluster: the owned cell nearest
@@ -7017,13 +7280,15 @@ Config.Ejected = {
 	-- receiver. Without this, surrounding big cells eat each other's
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
+	SelfFeedCenterRadius = 180,
+	SelfFeedVisualPellets = 2,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
 	-- has lived past LockedTargetTimeout seconds the lock releases
 	-- (so misses don't produce eternally-uneatable pellets).
 	LockPelletsToTarget = true,
-	LockedTargetTimeout = 3.0,
+	LockedTargetTimeout = 1.25,
 }
 
 Config.Network = {
@@ -7039,7 +7304,7 @@ Config.Network = {
 	StaticRefreshMaxInterval = 2.5,
 	MaxCellsPerSnapshot = 220,
 	MaxFoodPerSnapshot = 150,
-	MaxVirusesPerSnapshot = 16,
+	MaxVirusesPerSnapshot = 32,
 	MaxSpawnersPerSnapshot = 8,
 	MaxBarriersPerSnapshot = 6,
 	MaxEjectedPerSnapshot = 120,
@@ -7088,10 +7353,19 @@ Config.Render = {
 	OwnCellPredictionMaxLeadSeconds = 0.22,
 	OwnCellPredictionLeadExtraSeconds = 0.025,
 	OwnCellPredictionLeadScale = 1,
+	-- Maintain visible sibling separation while the server's recombination
+	-- cooldown is active. This is visual-only; server physics remains
+	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 12,
-	OwnCellVisualSeparationPasses = 2, -- restored to 2 for firm separation on normal splits
-	OwnCellVisualSeparationStrength = 0.75, -- was 0.55; firmer per-frame push
+	OwnCellVisualSeparationPasses = 2,
+	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
+	-- Client-only liquid surface response. Gaining mass sends several
+	-- translucent border rings inward without rotating or deforming skins.
+	LiquidRippleEnabled = true,
+	LiquidRippleDuration = 0.48,
+	LiquidRippleDepth = 0.18,
+	LiquidRippleMinMassGain = 2,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,
@@ -7132,17 +7406,18 @@ Config.Render = {
 	-- The launch follows its authoritative target immediately; smoothstep
 	-- controls the visual offset and radius growth without holding the child
 	-- on its parent.
-	SplitSpawnAnimationSeconds = 0.5,
+	SplitSpawnAnimationSeconds = 0.38,
 	SplitSpawnAnimationStartRadiusScale = 0.72,
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 24,
 	SplitSpawnAnimationTargetSharpness = 20,
 	SplitSpawnAnimationTargetLeadSeconds = 0.14,
-	SplitSpawnAnimationMaxOverrunSeconds = 0.12,
+	SplitSpawnAnimationMaxOverrunSeconds = 0.08,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
+	MergeAnimationSeconds = 0.42,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -7177,7 +7452,9 @@ Config.Admin = {
 
 Config.Tunables = {
 	-- Cell
-	{ path = "Cell.SplitImpulse",                label = "Split Impulse",             type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitImpulse",                label = "Split Distance",            type = "number", min = 100,  max = 2000,  step = 25 },
+	{ path = "Cell.SplitMaxBoost",               label = "Split Momentum Cap",        type = "number", min = 100,  max = 3000,  step = 25 },
+	{ path = "Cell.SplitBoostDragPerSecond",     label = "Split Braking (higher = shorter)", type = "number", min = 0.5, max = 10, step = 0.1 },
 	{ path = "Cell.SplitMinMass",                label = "Split Min Mass",            type = "number", min = 100,  max = 20000, step = 100, int = true },
 	{ path = "Cell.RecombineMinSeconds",         label = "Merge Cooldown Min (s)",    type = "number", min = 0.1,  max = 15,    step = 0.1 },
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
@@ -7191,10 +7468,14 @@ Config.Tunables = {
 
 	-- Player
 	{ path = "Player.MaxCells",                  label = "Max Cells",                 type = "number", min = 1,    max = 64,    step = 1, int = true },
-	{ path = "Player.BaseSpeed",                 label = "Base Speed",                type = "number", min = 50,   max = 1200,  step = 5 },
-	{ path = "Player.MinSpeed",                  label = "Min Speed",                 type = "number", min = 10,   max = 500,   step = 5 },
-	{ path = "Player.SpeedExponent",             label = "Speed Exponent",            type = "number", min = 0,    max = 2,     step = 0.01 },
-	{ path = "Player.DecayPerSecond",            label = "Decay / Second",            type = "number", min = 0,    max = 0.02,  step = 0.0001 },
+	{ path = "Player.BaseSpeed",                 label = "Small Cell Max Speed",      type = "number", min = 50,   max = 1200,  step = 5 },
+	{ path = "Player.MinSpeed",                  label = "Large Cell Min Speed",      type = "number", min = 10,   max = 500,   step = 5 },
+	{ path = "Player.SpeedExponent",             label = "Size Slowdown Strength",    type = "number", min = 0.05, max = 2,     step = 0.01 },
+	{ path = "Player.DecayPerSecond",            label = "Low Mass Decay Fraction / s", type = "number", min = 0,  max = 0.02, step = 0.0001 },
+	{ path = "Player.HighMassDecayStartMass",    label = "High Decay Start Mass",     type = "number", min = 1000, max = 10000000, step = 1000 },
+	{ path = "Player.HighMassDecayStartPerSecond", label = "Decay at Start Mass / s", type = "number", min = 0, max = 1000000, step = 100 },
+	{ path = "Player.HighMassDecayReferenceMass", label = "High Decay Reference Mass", type = "number", min = 1000, max = 10000000, step = 1000 },
+	{ path = "Player.HighMassDecayReferencePerSecond", label = "Decay at Reference / s", type = "number", min = 0, max = 1000000, step = 100 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
 
 	-- Food
@@ -7202,6 +7483,7 @@ Config.Tunables = {
 
 	-- Ejected (feed)
 	{ path = "Ejected.Mass",                     label = "Feed Pellet Mass",          type = "number", min = 10,   max = 1000,  step = 5 },
+	{ path = "Ejected.FireHz",                   label = "Feed Fire Rate (pellets/s)", type = "number", min = 1,    max = 30,    step = 1 },
 	{ path = "Ejected.Speed",                    label = "Feed Pellet Speed",         type = "number", min = 100,  max = 1500,  step = 10 },
 	{ path = "Ejected.DragPerSecond",            label = "Feed Pellet Drag / s",      type = "number", min = 0,    max = 10,    step = 0.1 },
 	{ path = "Ejected.LifeSeconds",              label = "Feed Pellet Life (s)",      type = "number", min = 1,    max = 60,    step = 0.5 },
@@ -8261,6 +8543,14 @@ local function splitAimForState(state): Vector2
 	return Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
 end
 
+local function splitAimForCell(state, cell): Vector2
+	local fallback = splitAimForState(state)
+	if state.input.target then
+		return Vec2.safeUnit(state.input.target - cell.pos, fallback)
+	end
+	return fallback
+end
+
 -- Mass-scaled merge cooldown. Formula per Config.Cell comments:
 --   clamp(RecombineMinSeconds + (mass / RecombineScaleMass) * RecombinePerScaleMass,
 --         RecombineMinSeconds, RecombineMaxSeconds)
@@ -8465,6 +8755,14 @@ local function ejectedTouchPickupDistance(collector, ejected): number
 	-- Padding remains available as a small inward/outward tuning offset.
 	local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 	local padding = Config.Ejected.TouchPickupPadding or 0
+	if ejected.targetCellId == collector.id
+		and ejected.ownerUserId == collector.ownerUserId
+	then
+		-- A locked self-feed pellet is considered received when its center
+		-- enters the intended cell. This remains visually contained while
+		-- avoiding misses on very small, moving receivers.
+		return math.max(collector.radius + padding, 0)
+	end
 	return math.max(collector.radius - ejected.radius * coverage + padding, 0)
 end
 
@@ -8475,7 +8773,32 @@ local function canCollectEjected(collector, ejected): boolean
 	end
 
 	local collectDistance = ejectedTouchPickupDistance(collector, ejected)
-	return Vec2.distanceSquared(collector.pos, ejected.pos) &lt;= collectDistance * collectDistance
+	if collectDistance &lt;= 0 then
+		return false
+	end
+	if Vec2.distanceSquared(collector.pos, ejected.pos) &lt;= collectDistance * collectDistance then
+		return true
+	end
+	local previousPos = ejected.previousPos
+	if not previousPos then
+		return false
+	end
+	local travel = ejected.pos - previousPos
+	local travelLengthSquared = travel:Dot(travel)
+	if travelLengthSquared &lt;= 0.000001 then
+		return false
+	end
+	local t = math.clamp((collector.pos - previousPos):Dot(travel) / travelLengthSquared, 0, 1)
+	local closest = previousPos + travel * t
+	return Vec2.distanceSquared(collector.pos, closest) &lt;= collectDistance * collectDistance
+end
+
+local function ejectedCostForCell(cell): number
+	local config = Config.Ejected
+	if cell.owner and cell.owner.frozen then
+		return math.max(config.FrozenCost or config.Cost or 0, 0)
+	end
+	return math.max(config.Cost or 0, 0)
 end
 
 local function canCellFireEjected(cell): boolean
@@ -8484,7 +8807,7 @@ local function canCellFireEjected(cell): boolean
 		return false
 	end
 
-	local cost = math.max(Config.Ejected.Cost or 0, 0)
+	local cost = ejectedCostForCell(cell)
 	return cost &lt;= 0 or cell.mass &gt; cost
 end
 
@@ -9019,6 +9342,12 @@ function GameService:_handleConfigUpdate(player: Player, payload)
 				end
 			end
 		end
+	end
+	if Config.Player.MinSpeed &gt; Config.Player.BaseSpeed then
+		-- Keep live speed edits safe for math.clamp and preserve the meaning
+		-- of BaseSpeed as the small-cell maximum.
+		Config.Player.MinSpeed = Config.Player.BaseSpeed
+		applied["Player.MinSpeed"] = Config.Player.MinSpeed
 	end
 	if next(applied) ~= nil and self.remotes and self.remotes.ConfigUpdate then
 		self.remotes.ConfigUpdate:FireAllClients({ kind = "sync", values = applied })
@@ -9904,7 +10233,15 @@ function GameService:_spawnBarrier(pos: Vector2?)
 	}
 end
 
-function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: number, sourceCellId: number?, targetCellId: number?)
+function GameService:_spawnEjected(
+	pos: Vector2,
+	dir: Vector2,
+	ownerUserId: number,
+	sourceCellId: number?,
+	targetCellId: number?,
+	pickupMultiplier: number?,
+	inheritedVelocity: Vector2?
+)
 	self:_trimOwnerEjected(ownerUserId)
 	if self.ejectedCount &gt;= Config.Ejected.MaxCount then
 		return
@@ -9927,8 +10264,9 @@ function GameService:_spawnEjected(pos: Vector2, dir: Vector2, ownerUserId: numb
 		targetCellId = targetCellId,
 		colorPayload = owner and owner.colorPayload or colorToPayload(Config.Render.EjectedColor),
 		pos = self:_clampToWorld(pos, Config.Ejected.Radius),
-		vel = dir * Config.Ejected.Speed,
+		vel = dir * Config.Ejected.Speed + (inheritedVelocity or Vector2.zero),
 		mass = Config.Ejected.Mass,
+		pickupMultiplier = math.max(pickupMultiplier or 1, 1),
 		radius = Config.Ejected.Radius,
 		spawnedAt = os.clock(),
 	}
@@ -10130,7 +10468,9 @@ local function ownCellMayCollectOwnEjected(cell, ejected, now: number): boolean
 end
 
 function GameService:_ejectedMassGain(cell, ejected, gainContext: string?): number
-	local baseGain = ejected.mass * math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+	local baseGain = ejected.mass
+		* math.max(Config.Ejected.PickupMassMultiplier or 1, 0)
+		* math.max(ejected.pickupMultiplier or 1, 1)
 	if gainContext ~= "selfFeed" or ejected.ownerUserId ~= cell.ownerUserId then
 		return baseGain
 	end
@@ -10922,18 +11262,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R: split the biggest eligible cell into 4 total pieces.
+		-- R: run three full Space-style split generations.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.DoubleSplitPieces or 4)
+			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
 		end
 
-		-- E: split the biggest eligible cell into 3 total pieces.
+		-- E: run two full split generations.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_multiSplitBiggest(state, Config.Cell.TripleSplitPieces or 3)
+			self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner =&gt; cells skip
@@ -10986,26 +11326,23 @@ function GameService:_splitPlayer(state)
 		end
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for index, cell in eligible do
-		local laneRatio = if #eligible &gt; 1 then (index - 1) / (#eligible - 1) - 0.5 else 0
-		local dir = rotateDirection(baseAim, laneRatio * groupSpread)
+	for _, cell in eligible do
+		local dir = splitAimForCell(state, cell)
 		local childMass = cell.mass * 0.5
 		self:_setCellMass(cell, childMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 		local childRadius = massToRadius(childMass)
-		-- If frozen, spawn the child with zero velocity but nudge it
-		-- a short distance along aim so the group has a direction
-		-- (not stacked on one point). Cells still stay bunched close.
-		-- Non-frozen: normal outward launch.
+		-- Frozen cells do not move, but retain a reduced paused launch
+		-- that resumes when freeze is released.
 		local childVelocity = if state.frozen
-			then Vector2.zero
+			then self:_splitLaunchBoost(cell, dir, childMass)
+				* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			spawnPos = self:_clampToWorld(cell.pos, childRadius)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
@@ -11038,9 +11375,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		return
 	end
 
-	local baseAim = splitAimForState(state)
-	local groupSpread = math.max(Config.Cell.SplitGroupFanRadians or 0, 0)
-	for cellIndex, cell in cells do
+	for _, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
 		if freeSlots &lt;= 0 then
 			break
@@ -11059,8 +11394,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local laneRatio = if #cells &gt; 1 then (cellIndex - 1) / (#cells - 1) - 0.5 else 0
-		local aim = rotateDirection(baseAim, laneRatio * groupSpread)
+		local aim = splitAimForCell(state, cell)
 
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
@@ -11078,8 +11412,10 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local childVelocity
 			local spawnPos
 			if state.frozen then
-				childVelocity = Vector2.zero
-				spawnPos = self:_clampToWorld(cell.pos, pieceRadius)
+				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
+					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -11100,82 +11436,21 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 	end
 end
 
-function GameService:_multiSplitBiggest(state, totalPieces: number)
-	-- Splits the biggest eligible cell into `totalPieces` equal pieces
-	-- (parent keeps 1/totalPieces of its mass, and (totalPieces - 1)
-	-- children spawn along aim, fanned slightly). Respects the 32-cell
-	-- cap and the SplitMinMass per-piece minimum. Kept for callers that
-	-- still want single-cell behavior; Q/E now use _splitEveryCellIntoN.
-	totalPieces = math.max(math.floor(totalPieces), 2)
-	local cells = self:_sortedPlayerCells(state)
-	local biggest = cells[1]
-	if not biggest then
-		return
-	end
-
-	local freeSlots = Config.Player.MaxCells - #state.cells
-	if freeSlots &lt;= 0 then
-		return
-	end
-
-	local minPiece = math.max(Config.Cell.SplitMinMass or 1, 1)
-	local piecesAllowedByMass = math.max(math.floor(biggest.mass / minPiece), 1)
-	local pieces = math.min(totalPieces, freeSlots + 1, piecesAllowedByMass)
-	if pieces &lt; 2 then
-		return
-	end
-
-	local newChildren = pieces - 1
-	local pieceMass = biggest.mass / pieces
-	local pieceRadius = massToRadius(pieceMass)
-	local aim = splitAimForState(state)
-
-	self:_setCellMass(biggest, pieceMass)
-	biggest.canRecombineAt = os.clock() + recombineDelayForMass(biggest.mass)
-	biggest.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
-
-	for i = 1, newChildren do
-		-- Tight fan across aim so children fly nearly straight. Config
-		-- knob Cell.MultiSplitFanRadians controls the total spread; 0
-		-- fires everything exactly on aim.
-		local fanSpread = math.max(Config.Cell.MultiSplitFanRadians or 0, 0)
-		local fanIndex = i - (newChildren + 1) * 0.5
-		local perChild = if newChildren &gt; 1 then fanSpread / (newChildren - 1) else 0
-		local fanAngle = fanIndex * perChild
-		local dir = rotateDirection(aim, fanAngle)
-
-		local childVelocity
-		local spawnPos
-		-- Stagger children along aim so a straight-line (fan~=0) split
-		-- doesn't spawn every child on the exact same pixel.
-		local staggerStep = pieceRadius * (Config.Cell.MultiSplitStaggerRadiusScale or 0.18)
-		local staggerOffset = (i - 1) * staggerStep
-		if state.frozen then
-			childVelocity = Vector2.zero
-			spawnPos = self:_clampToWorld(biggest.pos, pieceRadius)
-		else
-			childVelocity = self:_splitLaunchBoost(biggest, dir, pieceMass)
-			spawnPos = self:_adjustSpawnPositionForBarriers(
-				biggest.pos,
-				biggest.pos + dir * (
-					pieceRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)
-					+ staggerOffset
-				),
-				pieceRadius
-			)
+function GameService:_repeatSplitPlayer(state, generations: number)
+	-- E/R repeat actual Space presses: every eligible cell divides on each
+	-- generation, subject to minimum mass and the global cell cap.
+	for _ = 1, math.max(math.floor(generations), 1) do
+		if #state.cells &gt;= Config.Player.MaxCells then
+			break
 		end
-
-		local child = self:_spawnPlayerCell(state, spawnPos, pieceMass, childVelocity, true)
-		if child then
-			child.sweptEatStartPos = biggest.pos
-		end
+		self:_splitPlayer(state)
 	end
 end
 
 -- ==================================================================
 -- FREEZE ability (toggle). Flips state.frozen. When frozen:
 --  * _moveCells skips position updates and boost decay for the
---    owner's cells, so split momentum is preserved verbatim.
+--    owner's cells.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
 --  * _handleEating is NOT gated, so touching cells past their
@@ -11208,105 +11483,15 @@ function GameService:_toggleFreeze(state)
 	else
 		-- Transitioning frozen -&gt; not frozen. Mark an unfreeze grace
 		-- window so _resolveSamePlayerPush eases stacked cells apart
-		-- instead of exploding them outward in one step. Also nudge
-		-- coincident cells by a tiny deterministic offset so the push
-		-- has a direction to resolve.
+		-- instead of exploding them outward in one step.
 		local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
 		if graceSeconds &gt; 0 then
 			state.unfreezeGraceUntil = now + graceSeconds
 			state.unfreezeGraceStart = now
 		end
-		local jitter = math.max(cfg.UnfreezeJitterDistance or 0, 0)
-		if jitter &gt; 0 then
-			for _, id in state.cells do
-				local cell = self.cells[id]
-				if cell then
-					local angle = ((cell.id * 73) % 628) / 100
-					cell.pos = self:_clampToWorld(
-						cell.pos + Vec2.fromAngle(angle) * jitter,
-						cell.radius
-					)
-				end
-			end
-		end
 
-		-- Release fan: add a radial outward boost from the group
-		-- centroid so a stacked pile actually FANS OUT on unfreeze
-		-- instead of stalling in place while the cursor pulls the
-		-- cluster inward.
-		--
-		-- Design:
-		--   * Impulse strength is roughly UNIFORM per cell (no mass
-		--     amplification of tiny cells — that produces "rope"
-		--     spread where small cells fly to the map edge while big
-		--     cells barely move).
-		--   * F-spam guard: only apply if freeze was actually held for
-		--     ReleaseMinHoldSeconds. Instant re-toggles do nothing so
-		--     you can't stack impulses.
-		--   * Boost cap: after applying, clamp total cell.boost
-		--     magnitude to ReleaseImpulse so back-to-back releases
-		--     never accumulate.
-		--   * Skipped for 0/1 cells and if the pile isn't actually
-		--     stacked (mean distance from centroid &gt; 2 * biggest cell
-		--     radius) — no explosive push when your cells are already
-		--     spread out.
-		local releaseImpulse = math.max(cfg.ReleaseImpulse or 0, 0)
-		local minHold = math.max(cfg.ReleaseMinHoldSeconds or 0, 0)
-		local heldEnough = (now - (state.lastFreezeAt or 0)) &gt;= minHold
-			or (state.frozenSince and now - state.frozenSince &gt;= minHold)
-		if releaseImpulse &gt; 0 and #state.cells &gt; 1 and heldEnough then
-			local cx, cy, totalMass = 0, 0, 0
-			local biggestRadius = 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					cx += c.pos.X * c.mass
-					cy += c.pos.Y * c.mass
-					totalMass += c.mass
-					if c.radius &gt; biggestRadius then
-						biggestRadius = c.radius
-					end
-				end
-			end
-			if totalMass &gt; 0 then
-				local centroid = Vector2.new(cx / totalMass, cy / totalMass)
-
-				-- Only fire if the pile is actually clustered.
-				local sumDist = 0
-				local counted = 0
-				for _, id in state.cells do
-					local c = self.cells[id]
-					if c then
-						sumDist += (c.pos - centroid).Magnitude
-						counted += 1
-					end
-				end
-				local meanDist = if counted &gt; 0 then sumDist / counted else 0
-				local stackThreshold = math.max(biggestRadius * 1.6, 1)
-				if meanDist &lt;= stackThreshold then
-					for _, id in state.cells do
-						local cell = self.cells[id]
-						if cell then
-							local delta = cell.pos - centroid
-							local dist = delta.Magnitude
-							local dir
-							if dist &gt; 0.1 then
-								dir = delta / dist
-							else
-								-- Deterministic direction if cell is exactly at centroid.
-								local angle = ((cell.id * 137) % 628) / 100
-								dir = Vec2.fromAngle(angle)
-							end
-							-- Uniform impulse per cell, REPLACING any prior
-							-- boost so F-spam and residual split boost can
-							-- never stack. Cap not needed since we assign
-							-- rather than add.
-							cell.boost = dir * releaseImpulse
-						end
-					end
-				end
-			end
-		end
+		-- Split boost is intentionally left untouched while frozen, so
+		-- paused movement resumes in the same direction on release.
 	end
 
 	state.frozen = not state.frozen
@@ -11326,7 +11511,23 @@ function GameService:_ejectMassFromCells(state, cells)
 	-- actually work — otherwise the surrounding big cells eat each
 	-- other's pellets before they can cross to the tiny receiver.
 	local targetCellId = nil
+	local cursorMaySelfFeed = false
 	if Config.Ejected.SkipTargetCell and state.input.target then
+		local centerRadius = math.max(Config.Ejected.SelfFeedCenterRadius or 0, 0)
+		cursorMaySelfFeed = state.center ~= nil
+			and Vec2.distanceSquared(state.input.target, state.center) &lt;= centerRadius * centerRadius
+		if not cursorMaySelfFeed then
+			for _, cell in cells do
+				if self.cells[cell.id]
+					and Vec2.distanceSquared(state.input.target, cell.pos) &lt;= cell.radius * cell.radius
+				then
+					cursorMaySelfFeed = true
+					break
+				end
+			end
+		end
+	end
+	if cursorMaySelfFeed then
 		local bestDistSq = math.huge
 		for _, cell in cells do
 			if self.cells[cell.id] then
@@ -11367,7 +11568,17 @@ function GameService:_ejectMassFromCells(state, cells)
 		end
 	end
 
-	local perTickLimit = math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	-- In self-feed mode a small configurable group of pellets represents
+	-- every feeding cell. Their combined gain is unchanged, but the feed
+	-- looks fuller without rendering up to 31 pellets every interval.
+	local aggregateSelfFeed = targetCellId ~= nil and eligibleCount &gt; 1
+	local perTickLimit = if aggregateSelfFeed
+		then math.min(
+			eligibleCount,
+			math.max(math.floor(Config.Ejected.SelfFeedVisualPellets or 1), 1)
+		)
+		else math.min(eligibleCount, self:_ejectCellsPerTickLimit())
+	local pickupMultiplier = if aggregateSelfFeed then eligibleCount / perTickLimit else 1
 	local startIndex = (state.ejectCycleOffset % eligibleCount) + 1
 	local firedAny = false
 
@@ -11375,7 +11586,10 @@ function GameService:_ejectMassFromCells(state, cells)
 		local index = ((startIndex - 1 + step) % eligibleCount) + 1
 		local cell = eligible[index]
 		if self.cells[cell.id] and canCellFireEjected(cell) then
-			local aim = self:_cellAimDirection(state, cell)
+			local targetCell = targetCellId and self.cells[targetCellId] or nil
+			local aim = if targetCell
+				then Vec2.safeUnit(targetCell.pos - cell.pos, self:_cellAimDirection(state, cell))
+				else self:_cellAimDirection(state, cell)
 			local halfCone = math.rad(Config.Ejected.ConeDegrees) * 0.5
 			local angle = self.rng:NextNumber(-halfCone, halfCone)
 			local cos = math.cos(angle)
@@ -11384,13 +11598,39 @@ function GameService:_ejectMassFromCells(state, cells)
 				aim.X * cos - aim.Y * sin,
 				aim.X * sin + aim.Y * cos
 			), aim)
-			local cost = math.max(Config.Ejected.Cost or 0, 0)
-			if cost &gt; 0 then
+			local cost = ejectedCostForCell(cell)
+			if not aggregateSelfFeed and cost &gt; 0 then
 				self:_setCellMass(cell, cell.mass - cost)
 			end
+			local inheritedVelocity = Vector2.zero
+			if not state.frozen then
+				local moveDir, moveScale = self:_cellMoveVector(state, cell)
+				local moveSpeed = Config.Player.BaseSpeed
+					* (Config.Player.InitialMass / math.max(cell.mass, 1)) ^ Config.Player.SpeedExponent
+				moveSpeed = math.clamp(moveSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+				inheritedVelocity = moveDir * moveSpeed * moveScale + (cell.boost or Vector2.zero)
+			end
 			local spawnDistance = cell.radius + Config.Ejected.Radius + (Config.Ejected.NozzleOffset or 0)
-			self:_spawnEjected(cell.pos + aim * spawnDistance, shotDir, state.userId, cell.id, targetCellId)
+			self:_spawnEjected(
+				cell.pos + aim * spawnDistance,
+				shotDir,
+				state.userId,
+				cell.id,
+				targetCellId,
+				pickupMultiplier,
+				inheritedVelocity
+			)
 			firedAny = true
+		end
+	end
+	if firedAny and aggregateSelfFeed then
+		local cost = ejectedCostForCell(eligible[1])
+		if cost &gt; 0 then
+			for _, feedingCell in eligible do
+				if self.cells[feedingCell.id] and feedingCell.mass &gt; cost then
+					self:_setCellMass(feedingCell, feedingCell.mass - cost)
+				end
+			end
 		end
 	end
 	state.ejectCycleOffset = (startIndex - 1 + perTickLimit) % eligibleCount
@@ -11442,32 +11682,50 @@ function GameService:_moveCells(dt: number)
 	-- longer sprint away from the pack.
 	local playerBaseSpeed = {}
 	local playerCentroid = {}
+	local playerHighMassDecayFraction = {}
 	local clusterRatio = math.max(Config.Cell.ClusterMaxSpeedRatio or 1, 1)
 	local cohesion = math.clamp(Config.Cell.CohesionStrength or 0, 0, 1)
+	local highDecayStartMass = math.max(Config.Player.HighMassDecayStartMass or math.huge, 1)
+	local highDecayStartRate = math.max(Config.Player.HighMassDecayStartPerSecond or 0, 0)
+	local highDecayReferenceMass = math.max(
+		Config.Player.HighMassDecayReferenceMass or highDecayStartMass + 1,
+		highDecayStartMass + 1
+	)
+	local highDecayReferenceRate = math.max(
+		Config.Player.HighMassDecayReferencePerSecond or highDecayStartRate,
+		highDecayStartRate
+	)
 	for userId, state in self.playersByUserId do
-		if #state.cells &gt; 1 then
-			local maxMass = 0
-			local totalMass = 0
-			local cx, cy = 0, 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					if c.mass &gt; maxMass then
-						maxMass = c.mass
-					end
-					totalMass += c.mass
+		local maxMass = 0
+		local totalMass = 0
+		local cx, cy = 0, 0
+		for _, id in state.cells do
+			local c = self.cells[id]
+			if c then
+				if c.mass &gt; maxMass then
+					maxMass = c.mass
+				end
+				totalMass += c.mass
+				if #state.cells &gt; 1 then
 					cx += c.pos.X * c.mass
 					cy += c.pos.Y * c.mass
 				end
 			end
-			if maxMass &gt; 0 then
-				local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
-				bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
-				playerBaseSpeed[userId] = bigSpeed
-			end
-			if totalMass &gt; 0 then
-				playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
-			end
+		end
+		if maxMass &gt; 0 and #state.cells &gt; 1 then
+			local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
+			bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+			playerBaseSpeed[userId] = bigSpeed
+		end
+		if totalMass &gt; 0 and #state.cells &gt; 1 then
+			playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
+		end
+		if totalMass &gt;= highDecayStartMass and highDecayStartRate &gt; 0 then
+			local massProgress = (totalMass - highDecayStartMass)
+				/ (highDecayReferenceMass - highDecayStartMass)
+			local lossPerSecond = highDecayStartRate
+				+ (highDecayReferenceRate - highDecayStartRate) * math.max(massProgress, 0)
+			playerHighMassDecayFraction[userId] = math.clamp(lossPerSecond * dt / totalMass, 0, 0.95)
 		end
 	end
 
@@ -11477,7 +11735,10 @@ function GameService:_moveCells(dt: number)
 		-- applies so parking doesn't cheese decay timers.
 		local ownerState = self.playersByUserId[cell.ownerUserId]
 		if ownerState and ownerState.frozen then
-			if cell.mass &gt; Config.Player.MinDecayMass then
+			local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+			if highDecayFraction then
+				self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+			elseif cell.mass &gt; Config.Player.MinDecayMass then
 				self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 			end
 			continue
@@ -11516,7 +11777,10 @@ function GameService:_moveCells(dt: number)
 		cell.pos += (dir * speed * speedScale + pull + cell.boost) * dt
 		cell.pos = self:_clampToWorld(cell.pos, cell.radius)
 
-		if cell.mass &gt; Config.Player.MinDecayMass then
+		local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+		if highDecayFraction then
+			self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+		elseif cell.mass &gt; Config.Player.MinDecayMass then
 			self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 		end
 	end
@@ -11553,6 +11817,13 @@ function GameService:_moveEjected(dt: number)
 	end
 
 	for id, ejected in self.ejected do
+		ejected.previousPos = ejected.pos
+		local targetCell = ejected.targetCellId and self.cells[ejected.targetCellId] or nil
+		if ejected.targetCellId and not targetCell then
+			-- A merged or removed receiver should not leave the pellet
+			-- locked to a cell that no longer exists.
+			ejected.targetCellId = nil
+		end
 		local nextPos = ejected.pos + ejected.vel * dt
 		local worldMin, worldMax = self:_worldBounds()
 		local minX = worldMin.X + ejected.radius
@@ -12266,7 +12537,13 @@ function GameService:_queueEatEventsForCell(cell, events)
 		end
 	end
 
-	local ejectedQueryRadius = cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+	-- Include one maximum pellet step so a small, fast pellet cannot cross
+	-- entirely through a cell between simulation ticks.
+	local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
+	local ejectedQueryRadius = cell.radius
+		+ Config.Ejected.Radius
+		+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+		+ ejectedStepDistance
 	local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in ejectedCandidates do
 		local ejected = self.ejected[id]
@@ -12641,6 +12918,39 @@ function GameService:_bumpVirusesFromEjected()
 	end
 end
 
+function GameService:_nearMergeSiblingForVirusBurst(cell)
+	local state = cell.owner
+	if not state or #state.cells ~= 2 then
+		return nil
+	end
+
+	local sibling
+	for _, id in state.cells do
+		if id ~= cell.id then
+			sibling = self.cells[id]
+			break
+		end
+	end
+	if not sibling then
+		return nil
+	end
+
+	local now = os.clock()
+	local mergeReadyAt = math.max(cell.canRecombineAt or now, sibling.canRecombineAt or now)
+	local mergeWindow = math.max(Config.Virus.NearMergeWindowSeconds or 1, 0)
+	if mergeReadyAt &gt; now + mergeWindow then
+		return nil
+	end
+
+	local distanceScale = math.max(Config.Virus.NearMergeDistanceScale or 1.25, 1)
+	local nearDistance = (cell.radius + sibling.radius) * distanceScale
+	if Vec2.distanceSquared(cell.pos, sibling.pos) &gt; nearDistance * nearDistance then
+		return nil
+	end
+
+	return sibling
+end
+
 function GameService:_consumeBurstObject(cell, bonusMass: number?, source: string?): boolean
 	-- Virus.SplitOnEat = false: absorb the mass without bursting the
 	-- cell into pieces. Prevents the "auto-split" the player didn't ask
@@ -12653,7 +12963,28 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 		return true
 	end
 
-	if self:_burstCell(cell) then
+	local nearMergeSibling = if source == "virus"
+		then self:_nearMergeSiblingForVirusBurst(cell)
+		else nil
+	local didBurst, burstChildren = self:_burstCell(cell)
+	if didBurst then
+		if nearMergeSibling and self.cells[nearMergeSibling.id] and burstChildren then
+			table.sort(burstChildren, function(a, b)
+				return Vec2.distanceSquared(a.pos, nearMergeSibling.pos)
+					&lt; Vec2.distanceSquared(b.pos, nearMergeSibling.pos)
+			end)
+			local consumeCount = math.min(
+				math.max(math.floor(Config.Virus.NearMergeCannibalizePieces or 3), 0),
+				#burstChildren
+			)
+			for i = 1, consumeCount do
+				local child = burstChildren[i]
+				if self.cells[child.id] then
+					self:_setCellMass(nearMergeSibling, nearMergeSibling.mass + child.mass)
+					self:_removeCell(child, nearMergeSibling.id)
+				end
+			end
+		end
 		return true
 	end
 
@@ -12668,7 +12999,7 @@ function GameService:_consumeBurstObject(cell, bonusMass: number?, source: strin
 	return false
 end
 
-function GameService:_burstCell(cell): boolean
+function GameService:_burstCell(cell): (boolean, {any}?)
 	local state = cell.owner
 	local freeSlots = Config.Player.MaxCells - #state.cells
 	if freeSlots &lt;= 0 then
@@ -12686,6 +13017,7 @@ function GameService:_burstCell(cell): boolean
 	self:_setCellMass(cell, massPerPiece)
 	cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 	cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	local children = {}
 
 	for i = 1, pieces - 1 do
 		local dir = Vec2.fromAngle((math.pi * 2) * (i / (pieces - 1)))
@@ -12704,10 +13036,11 @@ function GameService:_burstCell(cell): boolean
 		)
 		if child then
 			child.sweptEatStartPos = cell.pos
+			children[#children + 1] = child
 		end
 	end
 
-	return true
+	return true, children
 end
 
 function GameService:_updatePlayerCenters()
@@ -12812,7 +13145,9 @@ function GameService:_appendEjectedSnapshot(list, center: Vector2, radius: numbe
 			ejected.id,
 			round(ejected.pos.X, Config.Network.PositionPrecision),
 			round(ejected.pos.Y, Config.Network.PositionPrecision),
-			ejected.colorPayload,
+			ejected.ownerUserId,
+			round(ejected.vel.X, Config.Network.PositionPrecision),
+			round(ejected.vel.Y, Config.Network.PositionPrecision),
 		}
 	end
 
@@ -13027,7 +13362,7 @@ function GameService:_trimFastSnapshotRows(cellsPayload, ejectedPayload, spawner
 	write = 1
 	local ejectedOverflow = {}
 	for read = 1, #ejectedPayload do
-		local rowBytes = 21
+		local rowBytes = 29
 		if used + rowBytes &lt;= budget then
 			ejectedPayload[write] = ejectedPayload[read]
 			write += 1
@@ -13150,10 +13485,10 @@ function GameService:_packEjectedBuffer(rows)
 		return nil
 	end
 	if typeof(buffer) ~= "table" then
-		return self:_compactRows(rows, 4)
+		return self:_compactRows(rows, 6)
 	end
 
-	local rowBytes = 21
+	local rowBytes = 29
 	local payload = buffer.create(#rows * rowBytes)
 	local offset = 0
 	for _, row in rows do
@@ -13168,6 +13503,8 @@ function GameService:_packEjectedBuffer(rows)
 			buffer.writeu8(payload, offset + 12, 2)
 			buffer.writef64(payload, offset + 13, packedColorValue(ownerOrColor))
 		end
+		buffer.writef32(payload, offset + 21, row[5] or 0)
+		buffer.writef32(payload, offset + 25, row[6] or 0)
 		offset += rowBytes
 	end
 	return payload
@@ -13239,8 +13576,14 @@ function GameService:_appendCellConsumePayload(gone, removedCells)
 	for _, id in removedCells do
 		local consume = self.cellConsumeTargets[id]
 		if consume then
+			local eaterId = consume.eaterId
+			local visited = {}
+			while eaterId and self.cellConsumeTargets[eaterId] and not visited[eaterId] do
+				visited[eaterId] = true
+				eaterId = self.cellConsumeTargets[eaterId].eaterId
+			end
 			rows = rows or {}
-			rows[#rows + 1] = { id, consume.eaterId }
+			rows[#rows + 1] = { id, eaterId or consume.eaterId }
 		end
 	end
 	if rows then
