@@ -2016,6 +2016,8 @@ function Camera2D.new()
 		manualZoom = 1,
 		autoZoomOut = nil,
 		hadOwnCells = false,
+		snapshotOwnRadius = 0,
+		visualOwnRadius = nil,
 		viewport = Vector2.new(1280, 720),
 		localPredictionCenter = nil,
 	}, Camera2D)
@@ -2070,6 +2072,18 @@ function Camera2D:updateFromSnapshot(snapshot)
 		end
 	end
 
+	self.snapshotOwnRadius = ownRadius
+	-- Prefer the on-screen radius so food bites do not zoom the camera
+	-- out ahead of the visual grow and make the blob look like it shrank.
+	self:_applyOwnRadius(self.visualOwnRadius or ownRadius)
+end
+
+function Camera2D:setVisualOwnRadius(radius: number?)
+	self.visualOwnRadius = if typeof(radius) == "number" then radius else nil
+	self:_applyOwnRadius(self.visualOwnRadius or self.snapshotOwnRadius or 0)
+end
+
+function Camera2D:_applyOwnRadius(ownRadius: number)
 	local referenceSize = Config.Render.AgarZoomReferenceSize or 64
 	local exponent = Config.Render.AgarZoomExponent or 0.4
 	local referenceWidth = Config.Render.AgarZoomReferenceWidth or 1920
@@ -2094,6 +2108,7 @@ function Camera2D:updateFromSnapshot(snapshot)
 		end
 	else
 		self.hadOwnCells = false
+		self.visualOwnRadius = nil
 	end
 	self.baseTargetZoom = computedZoom
 	self:_refreshTargetZoom()
@@ -4315,10 +4330,6 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 		return
 	end
 
-	local removed = {}
-	for _, id in ids do
-		removed[id] = true
-	end
 	local consumeTargets = {}
 	local consumeList = if typeof(consumeRows) == "table" then consumeRows else {}
 	for _, row in consumeList do
@@ -4334,33 +4345,13 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			continue
 		end
 
-		local sourcePos = state.targetPos or state.displayPos
 		local sourceOwner = state.extra and state.extra.ownerUserId
 		local explicitTargetId = consumeTargets[id]
 		local bestTarget = explicitTargetId and self.cellStates[explicitTargetId] or nil
-		local bestScore = math.huge
-		if not bestTarget then
-			for otherId, candidate in self.cellStates do
-				if otherId ~= id and not removed[otherId] and not candidate.consumeUntil then
-					local targetPos = candidate.targetPos or candidate.displayPos
-					local delta = targetPos - sourcePos
-					local distanceSquared = delta:Dot(delta)
-					local reach = (candidate.targetRadius or candidate.radius or 0)
-						+ (state.targetRadius or state.radius or 0)
-					if distanceSquared &lt;= reach * reach then
-						local sameOwner = sourceOwner ~= nil
-							and candidate.extra
-							and candidate.extra.ownerUserId == sourceOwner
-						local score = distanceSquared + (sameOwner and 0 or 100000000)
-						if score &lt; bestScore then
-							bestScore = score
-							bestTarget = candidate
-						end
-					end
-				end
-			end
-		end
 
+		-- Only swallow into the eater the server named. Guessing a nearby
+		-- sibling made virus pops and enemy eats look like the popped cell
+		-- melted into another of your blobs and vanished.
 		if bestTarget then
 			local isMerge = sourceOwner ~= nil
 				and bestTarget.extra
@@ -4369,6 +4360,7 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 				then math.max(Config.Render.MergeAnimationSeconds or 0.42, 0.01)
 				else math.max(Config.Render.ConsumeAnimationSeconds or 0.22, 0.01)
 			state.consumeTarget = bestTarget
+			state.consumeFade = false
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
 			state.consumeStartPos = state.displayPos
@@ -4382,8 +4374,14 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.extrapolate = false
 			state.isOwn = false
 		else
-			self.cellStates[id] = nil
-			self.cellPool:release(id)
+			state.consumeTarget = nil
+			state.consumeFade = true
+			state.consumeIsMerge = false
+			state.consumeStartedAt = now
+			state.consumeUntil = now + math.max(Config.Render.ConsumeFadeSeconds or 0.16, 0.01)
+			state.consumeStartRadius = state.radius
+			state.extrapolate = false
+			state.isOwn = false
 		end
 	end
 end
@@ -4513,9 +4511,8 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			and typeof(state.mass) == "number"
 		then
 			local gain = mass - state.mass
-			local feedChunk = math.max(Config.Food.Mass or 25, Config.Ejected.Mass or 10) * 6
-			if gain &gt;= math.max(Config.Render.LiquidEdgeMinMassGain or 1, 0.01)
-				and gain &gt;= math.max(Config.Cell.SplitMinMass or 100, feedChunk + 1)
+			if state.snapMassGain == true
+				and gain &gt;= math.max(Config.Render.LiquidEdgeMinMassGain or 1, 0.01)
 			then
 				self:_exciteLiquidEdge(state, os.clock(), math.clamp(0.4 + (gain / math.max(state.mass, 1)) * 2, 0, 1))
 			end
@@ -4531,14 +4528,10 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			if extra and not extra.isOwn then direction = state.velocity or direction end
 			self:_startSplitFlex(state, direction, os.clock(), true)
 		end
-		if kind == "cell" and radius &gt; (state.radius or 0) + 0.01 then
-			local gain = 0
-			if typeof(mass) == "number" and typeof(state.mass) == "number" then
-				gain = mass - state.mass
-			end
-			local feedChunk = math.max(Config.Food.Mass or 25, Config.Ejected.Mass or 10) * 6
+		if kind == "cell" and radius &gt; (state.targetRadius or state.radius or 0) + 0.01 then
+			-- Only cell-eat/merge sets snapMassGain. A patch of food in one
+			-- tick used to exceed the old mass threshold and pop like a merge.
 			local snap = state.snapMassGain == true
-				or gain &gt;= math.max(Config.Cell.SplitMinMass or 100, feedChunk + 1)
 			state.snapMassGain = nil
 			if snap then
 				local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
@@ -5279,7 +5272,10 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local progress = math.clamp((now - (state.consumeStartedAt or now)) / duration, 0, 1)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
-			if state.consumeIsMerge then
+			if state.consumeFade == true or not target then
+				local fade = progress * progress * (3 - 2 * progress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
+			elseif state.consumeIsMerge then
 				local pullStart = math.clamp(Config.Render.MergePullStart or 0.06, 0, 0.45)
 				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
 				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
@@ -5598,6 +5594,22 @@ function Renderer:step(dt: number?)
 	self:_resolveOwnBarrierPrediction()
 	self:_resolveOwnCellVisualSeparation()
 	self:_updatePredictedOwnCenter()
+	self:_updateCameraOwnRadius()
+end
+
+function Renderer:_updateCameraOwnRadius()
+	if not self.camera or not self.camera.setVisualOwnRadius then
+		return
+	end
+	local sum = 0
+	local hasOwn = false
+	for _, state in self.cellStates do
+		if state.isOwn and state.confirmed and not state.consumeUntil then
+			sum += state.radius
+			hasOwn = true
+		end
+	end
+	self.camera:setVisualOwnRadius(if hasOwn then sum else nil)
 end
 
 function Renderer:_stateIsDrawable(state): boolean
@@ -7816,6 +7828,7 @@ Config.Render = {
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
+	ConsumeFadeSeconds = 0.16,
 	-- Sibling swallow: the eaten cell rides the eater. The eater pops
 	-- to its new size immediately so the camera does not zoom in on a
 	-- still-small blob.
@@ -12912,6 +12925,10 @@ function GameService:_handleEating()
 	-- Resolve enemy/pickup events normally. Ready sibling pairs merge
 	-- independently from each cell's own split timer; overlapping
 	-- ready pieces can swallow in the same tick instead of queuing.
+	local justBurst = self.justBurstIdsScratch or {}
+	self.justBurstIdsScratch = justBurst
+	table.clear(justBurst)
+	self.justBurstIds = justBurst
 	local merges = self.mergeEventsScratch or {}
 	self.mergeEventsScratch = merges
 	table.clear(merges)
@@ -12936,6 +12953,9 @@ function GameService:_handleEating()
 	end)
 	local mergedThisTick = {}
 	for _, event in merges do
+		if justBurst[event.eaterId] or justBurst[event.targetId] then
+			continue
+		end
 		if not mergedThisTick[event.eaterId] and not mergedThisTick[event.targetId] then
 			local eater = self.cells[event.eaterId]
 			local target = self.cells[event.targetId]
@@ -12947,6 +12967,7 @@ function GameService:_handleEating()
 		end
 	end
 
+	self.justBurstIds = nil
 	for _, cell in self.cells do
 		cell.sweptEatStartPos = nil
 		cell.sweptEatBoostSpeed = nil
@@ -13517,9 +13538,17 @@ function GameService:_burstCell(cell): (boolean, {any}?)
 	end
 
 	local massPerPiece = cell.mass / pieces
+	local now = os.clock()
 	self:_setCellMass(cell, massPerPiece)
-	cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
-	cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	-- Treat the remnant like a fresh split piece so a nearby sibling that
+	-- was about to merge cannot cannibalize it the same tick it pops.
+	cell.spawnedAt = now
+	cell.canRecombineAt = now + recombineDelayForMass(cell.mass)
+	cell.canConsumeAt = now + math.max(Config.Cell.SplitConsumeGraceSeconds or 0, 0)
+	cell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	if self.justBurstIds then
+		self.justBurstIds[cell.id] = true
+	end
 	local children = {}
 
 	for i = 1, pieces - 1 do
@@ -13540,6 +13569,9 @@ function GameService:_burstCell(cell): (boolean, {any}?)
 		if child then
 			child.sweptEatStartPos = cell.pos
 			children[#children + 1] = child
+			if self.justBurstIds then
+				self.justBurstIds[child.id] = true
+			end
 		end
 	end
 
