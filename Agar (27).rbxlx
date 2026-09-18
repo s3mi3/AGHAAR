@@ -5290,7 +5290,7 @@ function Renderer:_ownCellsForVisualSeparation(now: number)
 	for _, state in self.cellStates do
 		if state.isOwn
 			and state.confirmed
-			and (state.visualSeparateUntil or 0) &gt; now
+			and not state.consumeUntil
 			and not isSplitSpawnAnimating(state, now)
 		then
 			cells[#cells + 1] = state
@@ -5410,9 +5410,7 @@ function Renderer:step(dt: number?)
 	self:_stepEntityStates(self.barrierStates, dt)
 	self:_stepEntityStates(self.cellStates, dt)
 	self:_resolveOwnBarrierPrediction()
-	-- Authoritative sibling separation only: a second GUI solver disagreed
-	-- with the server and made pieces orbit/recoil around one another.
-	self:_resolveOwnBarrierPrediction()
+	self:_resolveOwnCellVisualSeparation()
 	self:_updatePredictedOwnCenter()
 end
 
@@ -7109,6 +7107,14 @@ Config.Cell = {
 	RecombineMaxSeconds = 10,
 	MergePairInterval = 1.15, -- one local pair at a time per participating cell
 	MergeFinalPairInterval = 1.65, -- slower final stages, not a single-tick vacuum
+	-- Cascade merge: with 3+ pieces, the biggest cell cannot absorb
+	-- siblings. Nearby similar-sized pieces combine first, then those
+	-- larger pieces combine, and only the last two become one cell.
+	-- Sibling collision stays on except for the active pair, so small
+	-- cells sit on the rim instead of sliding underneath the big one.
+	CascadeMerge = true,
+	MergePairRangeScale = 1.12,
+	MergePairSeekScale = 3.5, -- if no touching smalls, pick the closest pair on the rim
 	SamePlayerPushSpeed = 720, -- resolve overlap instead of letting siblings sit inside each other
 	SamePlayerPushStrength = 0.85,
 	RecombineScaleMass = 10000,
@@ -7678,7 +7684,8 @@ Config.Tunables = {
 	{ path = "Player.HighMassDecayStartPerSecond", label = "Decay at Start Mass / s", type = "number", min = 0, max = 1000000, step = 100 },
 	{ path = "Player.HighMassDecayReferenceMass", label = "High Decay Reference Mass", type = "number", min = 1000, max = 10000000, step = 1000 },
 	{ path = "Player.HighMassDecayReferencePerSecond", label = "Decay at Reference / s", type = "number", min = 0, max = 1000000, step = 100 },
-	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
+	{ path = "Cell.MergePairInterval",           label = "Merge Pair Interval (s)",   type = "number", min = 0.2,  max = 5,     step = 0.05 },
+	{ path = "Cell.CascadeMerge",                label = "Cascade Small Merges First", type = "bool" },
 	{ path = "Cell.SamePlayerPushSpeed",         label = "Own-Cell Push Speed",       type = "number", min = 0,    max = 2000,  step = 10 },
 	{ path = "Cell.SamePlayerPushStrength",      label = "Own-Cell Push Strength",    type = "number", min = 0,    max = 1,     step = 0.05 },
 
@@ -9305,6 +9312,7 @@ function GameService.new()
 	self.querySeenScratch = {}
 	self.cellsScratch = {}
 	self.eatEventsScratch = {}
+	self.allowedMergePairs = {}
 	self.ejectedCollisionPairsScratch = {}
 	self.rng = Random.new()
 	self.running = false
@@ -11474,6 +11482,7 @@ function GameService:_step(dt: number)
 	self:_moveBarriers(dt)
 	self:_rebuildCellGrid()
 	self:_rebuildStaticGridsIfDirty()
+	self:_rebuildAllowedMergePairs()
 	self:_resolveSamePlayerPush(dt)
 	self:_resolveBarrierPush()
 	self:_rebuildCellAndEjectedGrids()
@@ -12451,6 +12460,88 @@ function GameService:_rebuildGrids()
 	self:_rebuildStaticGridsIfDirty()
 end
 
+function GameService:_rebuildAllowedMergePairs()
+	local pairsByUser = self.allowedMergePairs or {}
+	self.allowedMergePairs = pairsByUser
+	table.clear(pairsByUser)
+	if Config.Cell.CascadeMerge == false then
+		return
+	end
+
+	local now = os.clock()
+	local rangeScale = math.max(Config.Cell.MergePairRangeScale or 1.12, 1)
+	local seekScale = math.max(Config.Cell.MergePairSeekScale or 3.5, rangeScale)
+	for _, state in self.playersByUserId do
+		if (state.nextMergeAt or 0) &gt; now then
+			continue
+		end
+
+		local owned = {}
+		local maxMass = -1
+		local maxId = nil
+		for i = 1, #state.cells do
+			local cell = self.cells[state.cells[i]]
+			if cell then
+				owned[#owned + 1] = cell
+				if cell.mass &gt; maxMass or (cell.mass == maxMass and (maxId == nil or cell.id &lt; maxId)) then
+					maxMass = cell.mass
+					maxId = cell.id
+				end
+			end
+		end
+		if #owned &lt; 2 then
+			continue
+		end
+
+		local best = nil
+		local bestScore = nil
+		for i = 1, #owned - 1 do
+			local a = owned[i]
+			for j = i + 1, #owned do
+				local b = owned[j]
+				local eater = a
+				local target = b
+				if b.mass &gt; a.mass or (b.mass == a.mass and b.id &lt; a.id) then
+					eater = b
+					target = a
+				end
+				if now &lt; eater.canRecombineAt or now &lt; target.canRecombineAt then
+					continue
+				end
+				if now &lt; math.max(eater.nextMergeAt or 0, target.nextMergeAt or 0) then
+					continue
+				end
+				if #owned &gt; 2 and eater.id == maxId then
+					continue
+				end
+
+				local dist = (b.pos - a.pos).Magnitude
+				local touch = a.radius + b.radius
+				if dist &gt; touch * seekScale then
+					continue
+				end
+
+				local massRatio = eater.mass / math.max(target.mass, 1)
+				local overlap = (touch - dist) / math.max(touch, 1)
+				local farPenalty = 0
+				if dist &gt; touch * rangeScale then
+					farPenalty = 2500 + dist
+				end
+				-- Similar-sized nearby pieces first; smaller eaters before the
+				-- giant, so leftovers combine up the ladder.
+				local score = farPenalty + massRatio * 1000 + eater.mass * 0.02 - overlap * 80
+				if bestScore == nil or score &lt; bestScore then
+					bestScore = score
+					best = { eaterId = eater.id, targetId = target.id }
+				end
+			end
+		end
+		if best then
+			pairsByUser[state.userId] = best
+		end
+	end
+end
+
 function GameService:_resolveSamePlayerPush(dt: number?)
 	local now = os.clock()
 	local stepSeconds = math.clamp(dt or 1 / Config.Simulation.Hz, 0, 0.1)
@@ -12524,7 +12615,16 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local delta = b.pos - a.pos
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
-					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
+					local pair = self.allowedMergePairs and self.allowedMergePairs[state.userId]
+					local merging = pair and (
+						(pair.eaterId == a.id and pair.targetId == b.id)
+						or (pair.eaterId == b.id and pair.targetId == a.id)
+					)
+					local cascade = Config.Cell.CascadeMerge ~= false
+					local shouldPush = if cascade
+						then not merging
+						else (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt)
+					if dist &lt; minDist and shouldPush then
 						local dir
 						if dist &gt; 0.001 then
 							dir = delta / dist
@@ -12931,6 +13031,15 @@ function GameService:_cellCanEatCellAt(cell, target, now: number, eaterMass: num
 			return false
 		end
 
+		if Config.Cell.CascadeMerge ~= false then
+			local pair = self.allowedMergePairs and self.allowedMergePairs[cell.ownerUserId]
+			if not pair or pair.eaterId ~= cell.id or pair.targetId ~= target.id then
+				return false
+			end
+			local eatDistance = eaterRadius - target.radius * 0.25
+			return eatDistance &gt; 0 and Vec2.distanceSquared(cell.pos, target.pos) &lt;= eatDistance * eatDistance
+		end
+
 		-- Cannibalize (AUTOMATIC): a bigger own-cell can engulf a
 		-- smaller sibling BEFORE the normal recombine timer elapses,
 		-- so long as ALL of these hold — otherwise the mechanic would
@@ -13037,10 +13146,15 @@ function GameService:_applyEatEvent(event)
 		end
 		if target and target.id ~= cell.id and canEat then
 			if target.ownerUserId == cell.ownerUserId then
-				local ownerCount = cell.owner and #cell.owner.cells or 2
-				local interval = if ownerCount &lt;= 4 then Config.Cell.MergeFinalPairInterval or 1.65
+				local owner = cell.owner
+				local ownerCount = owner and #owner.cells or 2
+				local interval = if ownerCount &lt;= 2 then Config.Cell.MergeFinalPairInterval or 1.65
 					else Config.Cell.MergePairInterval or 1.15
-				cell.nextMergeAt = now + math.max(interval, (Config.Render.MergeAnimationSeconds or 1.05) + 0.1)
+				local delay = math.max(interval, (Config.Render.MergeAnimationSeconds or 1.05) + 0.1)
+				cell.nextMergeAt = now + delay
+				if owner then
+					owner.nextMergeAt = now + delay
+				end
 			end
 			self:_setCellMass(cell, cell.mass + target.mass)
 			self:_removeCell(target, cell.id)
