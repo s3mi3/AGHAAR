@@ -5368,15 +5368,21 @@ function Renderer:_resolveOwnCellVisualSeparation()
 				if distanceSquared &lt; minDist * minDist then
 					local dist = math.sqrt(distanceSquared)
 					local dir = if dist &gt; 0.001 then delta / dist else Vector2.new(1, 0)
-					local overlap = (minDist - dist) * strength
+					local overlap = minDist - dist
 					if overlapCap then
 						overlap = math.min(overlap, overlapCap)
 					end
 					local aMass = math.max(a.mass or a.radius, 1)
 					local bMass = math.max(b.mass or b.radius, 1)
-					local totalMass = aMass + bMass
-					a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * (bMass / totalMass), a.radius)
-					b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * (aMass / totalMass), b.radius)
+					if aMass &gt; bMass * 1.2 then
+						b.displayPos = self:_clampToWorld(a.displayPos + dir * minDist, b.radius)
+					elseif bMass &gt; aMass * 1.2 then
+						a.displayPos = self:_clampToWorld(b.displayPos - dir * minDist, a.radius)
+					else
+						local totalMass = aMass + bMass
+						a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * (bMass / totalMass), a.radius)
+						b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * (aMass / totalMass), b.radius)
+					end
 				end
 			end
 		end
@@ -7555,8 +7561,8 @@ Config.Render = {
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 12,
-	OwnCellVisualSeparationPasses = 1,
-	OwnCellVisualSeparationStrength = 0.75,
+	OwnCellVisualSeparationPasses = 4,
+	OwnCellVisualSeparationStrength = 1,
 	OwnCellVisualSeparationScale = 1.02,
 	-- Lightweight whole-image flex: native rounded edges, no sliced textures.
 	-- Filtered reactive flex, capped below 4%; no pixel snapping or idle-mode switch.
@@ -12539,10 +12545,96 @@ function GameService:_rebuildAllowedMergePairs()
 		if best then
 			pairsByUser[state.userId] = best
 		end
+		state.largestCellId = maxId
+		state.ownedCellCount = #owned
+	end
+end
+
+function GameService:_ejectCellFromAnchor(anchor, other)
+	local delta = other.pos - anchor.pos
+	local dist = delta.Magnitude
+	local minDist = anchor.radius + other.radius
+	if dist &gt;= minDist then
+		return
+	end
+	local dir
+	if dist &gt; 0.001 then
+		dir = delta / dist
+	else
+		dir = Vec2.safeUnit(other.boost or Vector2.zero, Vector2.new(1, 0))
+	end
+	other.pos = self:_clampToWorld(anchor.pos + dir * minDist, other.radius)
+end
+
+function GameService:_separateOwnedCellsForCascade()
+	-- Hard rim collision. Budgeted push could not keep extra small pieces
+	-- out of the largest cell, so they slid underneath and got absorbed.
+	-- Move the smaller cell onto the larger cell's rim except for the
+	-- single pair that is allowed to merge this tick.
+	for _, state in self.playersByUserId do
+		if state.frozen then
+			continue
+		end
+		local pair = self.allowedMergePairs and self.allowedMergePairs[state.userId]
+		local owned = {}
+		local largest = nil
+		for i = 1, #state.cells do
+			local cell = self.cells[state.cells[i]]
+			if cell then
+				owned[#owned + 1] = cell
+				if largest == nil
+					or cell.mass &gt; largest.mass
+					or (cell.mass == largest.mass and cell.id &lt; largest.id)
+				then
+					largest = cell
+				end
+			end
+		end
+		if #owned &lt; 2 then
+			continue
+		end
+
+		local function isMergePair(a, b): boolean
+			return pair ~= nil and (
+				(pair.eaterId == a.id and pair.targetId == b.id)
+				or (pair.eaterId == b.id and pair.targetId == a.id)
+			)
+		end
+
+		for _ = 1, 4 do
+			if largest and #owned &gt; 2 then
+				for _, other in owned do
+					if other.id ~= largest.id and not isMergePair(largest, other) then
+						self:_ejectCellFromAnchor(largest, other)
+					end
+				end
+			end
+			for i = 1, #owned - 1 do
+				local a = owned[i]
+				for j = i + 1, #owned do
+					local b = owned[j]
+					if isMergePair(a, b) then
+						continue
+					end
+					if largest and #owned &gt; 2 and (a.id == largest.id or b.id == largest.id) then
+						continue
+					end
+					if a.mass &gt;= b.mass then
+						self:_ejectCellFromAnchor(a, b)
+					else
+						self:_ejectCellFromAnchor(b, a)
+					end
+				end
+			end
+		end
 	end
 end
 
 function GameService:_resolveSamePlayerPush(dt: number?)
+	if Config.Cell.CascadeMerge ~= false then
+		self:_separateOwnedCellsForCascade()
+		return
+	end
 	local now = os.clock()
 	local stepSeconds = math.clamp(dt or 1 / Config.Simulation.Hz, 0, 0.1)
 	local maxDisplacement = math.max(Config.Cell.SamePlayerPushSpeed or 60, 0) * stepSeconds
@@ -13032,6 +13124,12 @@ function GameService:_cellCanEatCellAt(cell, target, now: number, eaterMass: num
 		end
 
 		if Config.Cell.CascadeMerge ~= false then
+			local owner = cell.owner
+			if owner and (owner.ownedCellCount or (owner.cells and #owner.cells) or 0) &gt; 2
+				and cell.id == owner.largestCellId
+			then
+				return false
+			end
 			local pair = self.allowedMergePairs and self.allowedMergePairs[cell.ownerUserId]
 			if not pair or pair.eaterId ~= cell.id or pair.targetId ~= target.id then
 				return false
