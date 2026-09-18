@@ -2014,6 +2014,8 @@ function Camera2D.new()
 		targetZoom = 1,
 		baseTargetZoom = 1,
 		manualZoom = 1,
+		autoZoomOut = nil,
+		hadOwnCells = false,
 		viewport = Vector2.new(1280, 720),
 		localPredictionCenter = nil,
 	}, Camera2D)
@@ -2076,7 +2078,24 @@ function Camera2D:updateFromSnapshot(snapshot)
 	local sizeFactor = math.pow(math.min(referenceSize / math.max(ownRadius, 1), 1), exponent)
 	-- Keep more of the arena visible on every device without changing the
 	-- world-space blob radius used by authoritative collision checks.
-	self.baseTargetZoom = sizeFactor * viewportScale * (Config.Render.AgarZoomOutScale or 1)
+	local computedZoom = sizeFactor * viewportScale * (Config.Render.AgarZoomOutScale or 1)
+	if ownRadius &gt; 1 then
+		if self.hadOwnCells ~= true then
+			self.autoZoomOut = computedZoom
+			self.hadOwnCells = true
+		elseif Config.Render.AutoZoomIn == false then
+			-- Merging drops the sum of radii, which used to pull the
+			-- camera in and make the remaining blob look smaller.
+			-- Auto zoom may only pull back (lower zoom), never in.
+			self.autoZoomOut = math.min(self.autoZoomOut or computedZoom, computedZoom)
+			computedZoom = self.autoZoomOut
+		else
+			self.autoZoomOut = computedZoom
+		end
+	else
+		self.hadOwnCells = false
+	end
+	self.baseTargetZoom = computedZoom
 	self:_refreshTargetZoom()
 end
 
@@ -7673,6 +7692,9 @@ Config.Render = {
 	AgarZoomReferenceHeight = 1080,
 	AgarZoomOutScale = 0.84, -- slightly closer view; larger values zoom in
 	AgarZoomBlendPer60Hz = 0.1,
+	-- Merging or losing pieces must not pull the camera in. Auto zoom
+	-- can still pull back as you grow or split. Manual +/- still works.
+	AutoZoomIn = false,
 	ExtrapolationSeconds = 0.08,
 	StaticConfirmSnapshots = 3,
 	StaleGraceSnapshots = 2,
@@ -7755,6 +7777,7 @@ Config.Tunables = {
 	{ path = "Cell.RecombinePerScaleMass",       label = "Merge sec / ScaleMass",     type = "number", min = 0,    max = 30,    step = 0.1 },
 	{ path = "Render.MergeAnimationSeconds",     label = "Merge Swallow (s)",         type = "number", min = 0.4,  max = 4,     step = 0.05 },
 	{ path = "Render.CellGrowthSharpness",       label = "Mass Gain Snap",            type = "number", min = 4,    max = 80,    step = 1 },
+	{ path = "Render.AutoZoomIn",                label = "Auto Zoom In",              type = "bool" },
 	{ path = "Cell.MultiSplitFanRadians",        label = "Multi-Split Fan (rad)",     type = "number", min = 0,    max = 1.5,   step = 0.01 },
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 0,    max = 10,    step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
