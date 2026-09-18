@@ -4527,6 +4527,13 @@ function Renderer:setSnapshot(snapshot)
 		end
 
 		for _, packed in snapshot.cells or {} do
+			if packed[2] == snapshot.you then
+				ownMass += packed[6]
+				ownCellsInSnapshot += 1
+			end
+		end
+
+		local function syncCellPacked(packed)
 			local ownerUserId = packed[2]
 			local meta = self.playerMeta[ownerUserId]
 			local isOwn = ownerUserId == snapshot.you
@@ -4550,10 +4557,19 @@ function Renderer:setSnapshot(snapshot)
 				false,
 				"cell"
 			)
+		end
 
-			if packed[2] == snapshot.you then
-				ownMass += packed[6]
-				ownCellsInSnapshot += 1
+		-- Update live cells first so a virus-pop mass drop is marked before
+		-- new burst pieces pick a spawn origin. Otherwise they hatch from a
+		-- nearby sibling and look like they shrank into it.
+		for _, packed in snapshot.cells or {} do
+			if self.cellStates[packed[1]] then
+				syncCellPacked(packed)
+			end
+		end
+		for _, packed in snapshot.cells or {} do
+			if not self.cellStates[packed[1]] then
+				syncCellPacked(packed)
 			end
 		end
 	end
@@ -4676,6 +4692,27 @@ function Renderer:_ejectedColor(payload): Color3
 	return colorFromPayload(payload)
 end
 
+function Renderer:_abortConsumesInto(target)
+	if not target then
+		return
+	end
+	local now = os.clock()
+	local fadeSeconds = math.max(Config.Render.ConsumeFadeSeconds or 0.16, 0.01)
+	for _, state in self.cellStates do
+		if state.consumeTarget == target and state.consumeFade ~= true then
+			state.consumeTarget = nil
+			state.consumeFade = true
+			state.consumeIsMerge = false
+			state.consumeStartOffset = nil
+			state.consumeStartedAt = now
+			state.consumeUntil = now + fadeSeconds
+			state.consumeStartRadius = state.radius
+			state.extrapolate = false
+			state.isOwn = false
+		end
+	end
+end
+
 function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 	if typeof(ids) ~= "table" then
 		return
@@ -4779,6 +4816,7 @@ function Renderer:_cellSpawnVisualOrigin(id: number, pos: Vector2, radius: numbe
 		local isMassDropSource = state.lastMassDropSerial == serial
 		if otherId ~= id
 			and state.confirmed == true
+			and state.consumeUntil == nil
 			and (not isSplitSpawnAnimating(state) or isMassDropSource)
 			and state.extra
 			and state.extra.ownerUserId == ownerUserId
@@ -4874,6 +4912,7 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			and mass &lt; state.mass * 0.8
 		then
 			state.lastMassDropSerial = serial
+			self:_abortConsumesInto(state)
 			self:_exciteLiquidEdge(state, os.clock(), 1)
 			local direction = self.localMoveAim or Vector2.new(1, 0)
 			if extra and not extra.isOwn then direction = state.velocity or direction end
@@ -9507,6 +9546,7 @@ Config.Virus = {
 	-- At the cap, the virus is absorbed and its mass is gained instead.
 	SplitOnEat = true,
 	MaxBurstPieces = 8,
+	BurstMergeGraceSeconds = 1.25,
 	BumpVelocityTransfer = 0.65,
 	BumpMinSpeed = 0,
 	BumpMaxSpeed = 220,
@@ -9671,7 +9711,7 @@ Config.Ejected = {
 	-- pellets before they can reach the tiny target.
 	SkipTargetCell = true,
 	-- No center-radius snapping: aim at a cell to feed it, or empty space to shoot out.
-	SelfFeedVisualPellets = 2,
+	SelfFeedVisualPellets = 10,
 	-- When true, own pellets are LOCKED to the target cell — sibling
 	-- own-cells cannot pick them up even if they cross the pellet's
 	-- path. Enemies can still eat them normally, and after the pellet
@@ -9761,7 +9801,7 @@ Config.Render = {
 	-- other cells pop; food and pellets ease in.
 	MassGainRadiusPop = 0.82,
 	CellGrowthSharpness = 32,
-	FeedGrowthSeconds = 2.4,
+	FeedGrowthSeconds = 0.75,
 	CellShrinkSharpness = 24,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
@@ -15428,6 +15468,9 @@ function GameService:_cellCanEatCellAt(cell, target, now: number, eaterMass: num
 		--     tolerance). The player has to actually steer the big cell
 		--     over the small one — passing sideways won't trigger it.
 		local canRecombine = now &gt;= cell.canRecombineAt and now &gt;= target.canRecombineAt
+		if now &lt; (cell.burstImmuneUntil or 0) or now &lt; (target.burstImmuneUntil or 0) then
+			return false
+		end
 		local cellConfig = Config.Cell or {}
 		local cannibalAllowed = false
 		if not canRecombine and (cellConfig.CannibalizeEnabled ~= false) then
@@ -15697,6 +15740,8 @@ function GameService:_burstCell(cell): (boolean, {any}?)
 	cell.canRecombineAt = now + recombineDelayForMass(cell.mass)
 	cell.canConsumeAt = now + math.max(Config.Cell.SplitConsumeGraceSeconds or 0, 0)
 	cell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+	local burstGrace = math.max(Config.Virus.BurstMergeGraceSeconds or 1.25, 0)
+	cell.burstImmuneUntil = now + burstGrace
 	if self.justBurstIds then
 		self.justBurstIds[cell.id] = true
 	end
@@ -15723,6 +15768,7 @@ function GameService:_burstCell(cell): (boolean, {any}?)
 			if self.justBurstIds then
 				self.justBurstIds[child.id] = true
 			end
+			child.burstImmuneUntil = now + burstGrace
 		end
 	end
 
