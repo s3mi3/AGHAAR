@@ -3225,32 +3225,40 @@ function GameService:_moveCells(dt: number)
 	-- longer sprint away from the pack.
 	local playerBaseSpeed = {}
 	local playerCentroid = {}
+	local playerHighMassDecayFraction = {}
 	local clusterRatio = math.max(Config.Cell.ClusterMaxSpeedRatio or 1, 1)
 	local cohesion = math.clamp(Config.Cell.CohesionStrength or 0, 0, 1)
+	local highDecayThreshold = math.max(Config.Player.HighMassDecayThreshold or math.huge, 1)
+	local highDecayAtThreshold = math.max(Config.Player.HighMassDecayPerSecond or 0, 0)
+	local highDecayExponent = math.max(Config.Player.HighMassDecayExponent or 1, 0)
 	for userId, state in self.playersByUserId do
-		if #state.cells > 1 then
-			local maxMass = 0
-			local totalMass = 0
-			local cx, cy = 0, 0
-			for _, id in state.cells do
-				local c = self.cells[id]
-				if c then
-					if c.mass > maxMass then
-						maxMass = c.mass
-					end
-					totalMass += c.mass
+		local maxMass = 0
+		local totalMass = 0
+		local cx, cy = 0, 0
+		for _, id in state.cells do
+			local c = self.cells[id]
+			if c then
+				if c.mass > maxMass then
+					maxMass = c.mass
+				end
+				totalMass += c.mass
+				if #state.cells > 1 then
 					cx += c.pos.X * c.mass
 					cy += c.pos.Y * c.mass
 				end
 			end
-			if maxMass > 0 then
-				local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
-				bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
-				playerBaseSpeed[userId] = bigSpeed
-			end
-			if totalMass > 0 then
-				playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
-			end
+		end
+		if maxMass > 0 and #state.cells > 1 then
+			local bigSpeed = Config.Player.BaseSpeed * (Config.Player.InitialMass / maxMass) ^ Config.Player.SpeedExponent
+			bigSpeed = math.clamp(bigSpeed, Config.Player.MinSpeed, Config.Player.BaseSpeed)
+			playerBaseSpeed[userId] = bigSpeed
+		end
+		if totalMass > 0 and #state.cells > 1 then
+			playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
+		end
+		if totalMass > highDecayThreshold and highDecayAtThreshold > 0 then
+			local lossPerSecond = highDecayAtThreshold * (totalMass / highDecayThreshold) ^ highDecayExponent
+			playerHighMassDecayFraction[userId] = math.clamp(lossPerSecond * dt / totalMass, 0, 0.95)
 		end
 	end
 
@@ -3260,7 +3268,10 @@ function GameService:_moveCells(dt: number)
 		-- applies so parking doesn't cheese decay timers.
 		local ownerState = self.playersByUserId[cell.ownerUserId]
 		if ownerState and ownerState.frozen then
-			if cell.mass > Config.Player.MinDecayMass then
+			local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+			if highDecayFraction then
+				self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+			elseif cell.mass > Config.Player.MinDecayMass then
 				self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 			end
 			continue
@@ -3299,7 +3310,10 @@ function GameService:_moveCells(dt: number)
 		cell.pos += (dir * speed * speedScale + pull + cell.boost) * dt
 		cell.pos = self:_clampToWorld(cell.pos, cell.radius)
 
-		if cell.mass > Config.Player.MinDecayMass then
+		local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
+		if highDecayFraction then
+			self:_setCellMass(cell, cell.mass * (1 - highDecayFraction))
+		elseif cell.mass > Config.Player.MinDecayMass then
 			self:_setCellMass(cell, cell.mass * (1 - Config.Player.DecayPerSecond * dt))
 		end
 	end

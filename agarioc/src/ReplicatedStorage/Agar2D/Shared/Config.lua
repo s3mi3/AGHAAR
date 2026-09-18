@@ -47,6 +47,9 @@ Config.Player = {
 	InitialMass = 1000,
 	MinDecayMass = 140,
 	DecayPerSecond = 0.0004, -- was 0.001; slower shrink so mass sticks around
+	HighMassDecayThreshold = 100000,
+	HighMassDecayPerSecond = 5000,
+	HighMassDecayExponent = 1,
 	BaseSpeed = 275,
 	MinSpeed = 75,
 	SpeedExponent = 0.42,
@@ -562,7 +565,10 @@ Config.Tunables = {
 	{ path = "Player.BaseSpeed",                 label = "Small Cell Max Speed",      type = "number", min = 50,   max = 1200,  step = 5 },
 	{ path = "Player.MinSpeed",                  label = "Large Cell Min Speed",      type = "number", min = 10,   max = 500,   step = 5 },
 	{ path = "Player.SpeedExponent",             label = "Size Slowdown Strength",    type = "number", min = 0.05, max = 2,     step = 0.01 },
-	{ path = "Player.DecayPerSecond",            label = "Decay / Second",            type = "number", min = 0,    max = 0.02,  step = 0.0001 },
+	{ path = "Player.DecayPerSecond",            label = "Low Mass Decay Fraction / s", type = "number", min = 0,  max = 0.02, step = 0.0001 },
+	{ path = "Player.HighMassDecayThreshold",    label = "High Decay Starts At",      type = "number", min = 1000, max = 10000000, step = 1000 },
+	{ path = "Player.HighMassDecayPerSecond",    label = "High Decay Mass / s",       type = "number", min = 0,    max = 1000000, step = 500 },
+	{ path = "Player.HighMassDecayExponent",     label = "High Decay Scaling",        type = "number", min = 0,    max = 3,     step = 0.05 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
 
 	-- Food
