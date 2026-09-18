@@ -5292,6 +5292,7 @@ function Renderer:_ownCellsForVisualSeparation(now: number)
 			and state.confirmed
 			and not state.consumeUntil
 			and not isSplitSpawnAnimating(state, now)
+			and (state.visualSeparateUntil or 0) &gt; now
 		then
 			cells[#cells + 1] = state
 		end
@@ -5368,21 +5369,15 @@ function Renderer:_resolveOwnCellVisualSeparation()
 				if distanceSquared &lt; minDist * minDist then
 					local dist = math.sqrt(distanceSquared)
 					local dir = if dist &gt; 0.001 then delta / dist else Vector2.new(1, 0)
-					local overlap = minDist - dist
+					local overlap = (minDist - dist) * strength
 					if overlapCap then
 						overlap = math.min(overlap, overlapCap)
 					end
 					local aMass = math.max(a.mass or a.radius, 1)
 					local bMass = math.max(b.mass or b.radius, 1)
-					if aMass &gt; bMass * 1.2 then
-						b.displayPos = self:_clampToWorld(a.displayPos + dir * minDist, b.radius)
-					elseif bMass &gt; aMass * 1.2 then
-						a.displayPos = self:_clampToWorld(b.displayPos - dir * minDist, a.radius)
-					else
-						local totalMass = aMass + bMass
-						a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * (bMass / totalMass), a.radius)
-						b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * (aMass / totalMass), b.radius)
-					end
+					local totalMass = aMass + bMass
+					a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * (bMass / totalMass), a.radius)
+					b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * (aMass / totalMass), b.radius)
 				end
 			end
 		end
@@ -7111,13 +7106,12 @@ Config.Cell = {
 	-- Formula: clamp(Min + (mass / ScaleMass) * PerScaleMass, Min, Max).
 	RecombineMinSeconds = 8,
 	RecombineMaxSeconds = 10,
-	MergePairInterval = 1.15, -- one local pair at a time per participating cell
-	MergeFinalPairInterval = 1.65, -- slower final stages, not a single-tick vacuum
-	-- Cascade merge: with 3+ pieces, the biggest cell cannot absorb
-	-- siblings. Nearby similar-sized pieces combine first, then those
-	-- larger pieces combine, and only the last two become one cell.
-	-- Sibling collision stays on except for the active pair, so small
-	-- cells sit on the rim instead of sliding underneath the big one.
+	MergePairInterval = 1.15, -- cooldown on a cell that just ate a sibling
+	MergeFinalPairInterval = 0.85, -- last two should finish, not stall
+	-- Prefer nearby similar pieces, but do not force every leftover
+	-- through one other blob. Several pairs can merge at once, the
+	-- original large cell can still eat a piece that sits inside it,
+	-- and the last two always finish on contact so the swallow plays.
 	CascadeMerge = true,
 	MergePairRangeScale = 1.12,
 	MergePairSeekScale = 3.5, -- if no touching smalls, pick the closest pair on the rim
@@ -7560,9 +7554,9 @@ Config.Render = {
 	-- Maintain visible sibling separation while the server's recombination
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
-	OwnCellVisualSeparationSeconds = 12,
-	OwnCellVisualSeparationPasses = 4,
-	OwnCellVisualSeparationStrength = 1,
+	OwnCellVisualSeparationSeconds = 8,
+	OwnCellVisualSeparationPasses = 1,
+	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
 	-- Lightweight whole-image flex: native rounded edges, no sliced textures.
 	-- Filtered reactive flex, capped below 4%; no pixel snapping or idle-mode switch.
@@ -12466,6 +12460,25 @@ function GameService:_rebuildGrids()
 	self:_rebuildStaticGridsIfDirty()
 end
 
+function GameService:_cellsAreMergePair(userId, aId, bId): boolean
+	local pairs = self.allowedMergePairs and self.allowedMergePairs[userId]
+	if not pairs then
+		return false
+	end
+	if pairs.eaterId then
+		return (pairs.eaterId == aId and pairs.targetId == bId)
+			or (pairs.eaterId == bId and pairs.targetId == aId)
+	end
+	for _, pair in pairs do
+		if (pair.eaterId == aId and pair.targetId == bId)
+			or (pair.eaterId == bId and pair.targetId == aId)
+		then
+			return true
+		end
+	end
+	return false
+end
+
 function GameService:_rebuildAllowedMergePairs()
 	local pairsByUser = self.allowedMergePairs or {}
 	self.allowedMergePairs = pairsByUser
@@ -12478,10 +12491,6 @@ function GameService:_rebuildAllowedMergePairs()
 	local rangeScale = math.max(Config.Cell.MergePairRangeScale or 1.12, 1)
 	local seekScale = math.max(Config.Cell.MergePairSeekScale or 3.5, rangeScale)
 	for _, state in self.playersByUserId do
-		if (state.nextMergeAt or 0) &gt; now then
-			continue
-		end
-
 		local owned = {}
 		local maxMass = -1
 		local maxId = nil
@@ -12499,8 +12508,7 @@ function GameService:_rebuildAllowedMergePairs()
 			continue
 		end
 
-		local best = nil
-		local bestScore = nil
+		local candidates = {}
 		for i = 1, #owned - 1 do
 			local a = owned[i]
 			for j = i + 1, #owned do
@@ -12517,9 +12525,6 @@ function GameService:_rebuildAllowedMergePairs()
 				if now &lt; math.max(eater.nextMergeAt or 0, target.nextMergeAt or 0) then
 					continue
 				end
-				if #owned &gt; 2 and eater.id == maxId then
-					continue
-				end
 
 				local dist = (b.pos - a.pos).Magnitude
 				local touch = a.radius + b.radius
@@ -12533,108 +12538,41 @@ function GameService:_rebuildAllowedMergePairs()
 				if dist &gt; touch * rangeScale then
 					farPenalty = 2500 + dist
 				end
-				-- Similar-sized nearby pieces first; smaller eaters before the
-				-- giant, so leftovers combine up the ladder.
+				-- Nearby similar pieces first. The original large cell can
+				-- still take a leftover, just not before closer small pairs.
 				local score = farPenalty + massRatio * 1000 + eater.mass * 0.02 - overlap * 80
-				if bestScore == nil or score &lt; bestScore then
-					bestScore = score
-					best = { eaterId = eater.id, targetId = target.id }
+				if #owned &gt; 2 and eater.id == maxId then
+					score += 400
 				end
+				candidates[#candidates + 1] = {
+					eaterId = eater.id,
+					targetId = target.id,
+					score = score,
+				}
 			end
 		end
-		if best then
-			pairsByUser[state.userId] = best
-		end
-		state.largestCellId = maxId
-		state.ownedCellCount = #owned
-	end
-end
-
-function GameService:_ejectCellFromAnchor(anchor, other)
-	local delta = other.pos - anchor.pos
-	local dist = delta.Magnitude
-	local minDist = anchor.radius + other.radius
-	if dist &gt;= minDist then
-		return
-	end
-	local dir
-	if dist &gt; 0.001 then
-		dir = delta / dist
-	else
-		dir = Vec2.safeUnit(other.boost or Vector2.zero, Vector2.new(1, 0))
-	end
-	other.pos = self:_clampToWorld(anchor.pos + dir * minDist, other.radius)
-end
-
-function GameService:_separateOwnedCellsForCascade()
-	-- Hard rim collision. Budgeted push could not keep extra small pieces
-	-- out of the largest cell, so they slid underneath and got absorbed.
-	-- Move the smaller cell onto the larger cell's rim except for the
-	-- single pair that is allowed to merge this tick.
-	for _, state in self.playersByUserId do
-		if state.frozen then
-			continue
-		end
-		local pair = self.allowedMergePairs and self.allowedMergePairs[state.userId]
-		local owned = {}
-		local largest = nil
-		for i = 1, #state.cells do
-			local cell = self.cells[state.cells[i]]
-			if cell then
-				owned[#owned + 1] = cell
-				if largest == nil
-					or cell.mass &gt; largest.mass
-					or (cell.mass == largest.mass and cell.id &lt; largest.id)
-				then
-					largest = cell
-				end
+		table.sort(candidates, function(left, right)
+			return left.score &lt; right.score
+		end)
+		local chosen = {}
+		local used = {}
+		for _, candidate in candidates do
+			if not used[candidate.eaterId] and not used[candidate.targetId] then
+				used[candidate.eaterId] = true
+				used[candidate.targetId] = true
+				chosen[#chosen + 1] = {
+					eaterId = candidate.eaterId,
+					targetId = candidate.targetId,
+				}
 			end
 		end
-		if #owned &lt; 2 then
-			continue
-		end
-
-		local function isMergePair(a, b): boolean
-			return pair ~= nil and (
-				(pair.eaterId == a.id and pair.targetId == b.id)
-				or (pair.eaterId == b.id and pair.targetId == a.id)
-			)
-		end
-
-		for _ = 1, 4 do
-			if largest and #owned &gt; 2 then
-				for _, other in owned do
-					if other.id ~= largest.id and not isMergePair(largest, other) then
-						self:_ejectCellFromAnchor(largest, other)
-					end
-				end
-			end
-			for i = 1, #owned - 1 do
-				local a = owned[i]
-				for j = i + 1, #owned do
-					local b = owned[j]
-					if isMergePair(a, b) then
-						continue
-					end
-					if largest and #owned &gt; 2 and (a.id == largest.id or b.id == largest.id) then
-						continue
-					end
-					if a.mass &gt;= b.mass then
-						self:_ejectCellFromAnchor(a, b)
-					else
-						self:_ejectCellFromAnchor(b, a)
-					end
-				end
-			end
+		if #chosen &gt; 0 then
+			pairsByUser[state.userId] = chosen
 		end
 	end
 end
 
 function GameService:_resolveSamePlayerPush(dt: number?)
-	if Config.Cell.CascadeMerge ~= false then
-		self:_separateOwnedCellsForCascade()
-		return
-	end
 	local now = os.clock()
 	local stepSeconds = math.clamp(dt or 1 / Config.Simulation.Hz, 0, 0.1)
 	local maxDisplacement = math.max(Config.Cell.SamePlayerPushSpeed or 60, 0) * stepSeconds
@@ -12707,12 +12645,22 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local delta = b.pos - a.pos
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
-					local pair = self.allowedMergePairs and self.allowedMergePairs[state.userId]
-					local merging = pair and (
-						(pair.eaterId == a.id and pair.targetId == b.id)
-						or (pair.eaterId == b.id and pair.targetId == a.id)
-					)
 					local cascade = Config.Cell.CascadeMerge ~= false
+					local mergeReady = now &gt;= a.canRecombineAt
+						and now &gt;= b.canRecombineAt
+						and now &gt;= math.max(a.nextMergeAt or 0, b.nextMergeAt or 0)
+					local merging = cascade and self:_cellsAreMergePair(state.userId, a.id, b.id)
+					if cascade and mergeReady and #ownedCells &lt;= 2 then
+						merging = true
+					end
+					if cascade and mergeReady and not merging then
+						local eaterR = if a.mass &gt;= b.mass then a.radius else b.radius
+						local targetR = if a.mass &gt;= b.mass then b.radius else a.radius
+						local deepEat = eaterR - targetR * 0.55
+						if deepEat &gt; 0 and dist &lt;= deepEat then
+							merging = true
+						end
+					end
 					local shouldPush = if cascade
 						then not merging
 						else (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt)
@@ -13125,17 +13073,20 @@ function GameService:_cellCanEatCellAt(cell, target, now: number, eaterMass: num
 
 		if Config.Cell.CascadeMerge ~= false then
 			local owner = cell.owner
-			if owner and (owner.ownedCellCount or (owner.cells and #owner.cells) or 0) &gt; 2
-				and cell.id == owner.largestCellId
-			then
-				return false
+			local ownedCount = owner and owner.cells and #owner.cells or 2
+			local lastTwo = ownedCount &lt;= 2
+			local allowed = self:_cellsAreMergePair(cell.ownerUserId, cell.id, target.id)
+			local distSq = Vec2.distanceSquared(cell.pos, target.pos)
+			if lastTwo or allowed then
+				-- Contact is enough so the swallow animation can play instead
+				-- of waiting until one cell has already vanished inside the other.
+				local eatDistance = eaterRadius + target.radius * (if lastTwo then 1.08 else 1.02)
+				return eatDistance &gt; 0 and distSq &lt;= eatDistance * eatDistance
 			end
-			local pair = self.allowedMergePairs and self.allowedMergePairs[cell.ownerUserId]
-			if not pair or pair.eaterId ~= cell.id or pair.targetId ~= target.id then
-				return false
-			end
-			local eatDistance = eaterRadius - target.radius * 0.25
-			return eatDistance &gt; 0 and Vec2.distanceSquared(cell.pos, target.pos) &lt;= eatDistance * eatDistance
+			-- Leftover pieces still merge the normal way if they are actually
+			-- sitting inside a larger sibling, not only through the cascade pair.
+			local eatDistance = eaterRadius - target.radius * 0.55
+			return eatDistance &gt; 0 and distSq &lt;= eatDistance * eatDistance
 		end
 
 		-- Cannibalize (AUTOMATIC): a bigger own-cell can engulf a
@@ -13246,13 +13197,10 @@ function GameService:_applyEatEvent(event)
 			if target.ownerUserId == cell.ownerUserId then
 				local owner = cell.owner
 				local ownerCount = owner and #owner.cells or 2
-				local interval = if ownerCount &lt;= 2 then Config.Cell.MergeFinalPairInterval or 1.65
+				local interval = if ownerCount &lt;= 2 then Config.Cell.MergeFinalPairInterval or 0.85
 					else Config.Cell.MergePairInterval or 1.15
 				local delay = math.max(interval, (Config.Render.MergeAnimationSeconds or 1.05) + 0.1)
 				cell.nextMergeAt = now + delay
-				if owner then
-					owner.nextMergeAt = now + delay
-				end
 			end
 			self:_setCellMass(cell, cell.mass + target.mass)
 			self:_removeCell(target, cell.id)
