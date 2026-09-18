@@ -4414,14 +4414,10 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
 			if isMerge then
-				-- Grow the eater as this cell slides in, not at merge start.
-				bestTarget.mergeGrowFromRadius = bestTarget.radius
-				bestTarget.mergeGrowFromMass = bestTarget.displayMass or bestTarget.mass or 0
-				bestTarget.mergeGrowUntil = now + duration
+				bestTarget.mergeGrowthUntil = now + duration
 				bestTarget.feedGrow = false
 				bestTarget.feedSlices = nil
 				bestTarget.snapMassGain = nil
-				self:_exciteLiquidEdge(bestTarget, now, 0.8)
 			else
 				bestTarget.snapMassGain = true
 			end
@@ -4583,8 +4579,8 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			self:_startSplitFlex(state, direction, os.clock(), true)
 		end
 		if kind == "cell" and radius &gt; (state.targetRadius or state.radius or 0) + 0.01 then
-			-- Merge size is driven by the swallow animation.
-			if (state.mergeGrowUntil or 0) &gt; os.clock() then
+			-- Merge size eases with MergeGrowthSharpness; do not pop or feed-smooth it.
+			if (state.mergeGrowthUntil or 0) &gt; os.clock() then
 				state.feedGrow = false
 				state.feedSlices = nil
 				state.snapMassGain = nil
@@ -5137,19 +5133,11 @@ function Renderer:_projectOwnAuthoritativeTarget(state)
 end
 
 function Renderer:_stepCellRadius(state, dt: number)
-	if (state.mergeGrowUntil or 0) &gt; os.clock() then
-		return
-	end
-	if state.mergeGrowUntil then
-		state.mergeGrowUntil = nil
-		state.mergeGrowFromRadius = nil
-		state.mergeGrowFromMass = nil
-		state.displayMass = nil
-	end
 	local target = state.targetRadius or state.radius
 	local current = state.radius
 	local growing = target &gt; current
-	if growing and state.feedGrow then
+	local merging = growing and (state.mergeGrowthUntil or 0) &gt; os.clock()
+	if growing and state.feedGrow and not merging then
 		-- Each pellet's radius delta uses smootherstep (zero velocity and
 		-- acceleration at both ends) so feeding inflates instead of kicking.
 		local seconds = math.max(Config.Render.FeedGrowthSeconds or 2.4, 0.08)
@@ -5200,6 +5188,9 @@ function Renderer:_stepCellRadius(state, dt: number)
 	local growthSharpness = Config.Render.CellGrowthSharpness or 32
 	local sharpness = math.max(if growing then growthSharpness
 		else Config.Render.CellShrinkSharpness or 24, 0.1)
+	if merging then
+		sharpness = math.max(Config.Render.MergeGrowthSharpness or 5, 0.1)
+	end
 	if not growing then
 		state.feedGrow = nil
 		state.feedSlices = nil
@@ -5347,31 +5338,10 @@ function Renderer:_stepEntityStates(states, dt: number)
 				local fade = progress * progress * (3 - 2 * progress)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
 			elseif state.consumeIsMerge then
-				local pullStart = math.clamp(Config.Render.MergePullStart or 0.06, 0, 0.45)
-				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
-				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
-				local shrinkT = math.clamp((progress - shrinkStart) / math.max(1 - shrinkStart, 0.01), 0, 1)
-				local pull = pullT * pullT * pullT * (pullT * (pullT * 6 - 15) + 10)
-				local shrink = shrinkT * shrinkT * shrinkT * (shrinkT * (shrinkT * 6 - 15) + 10)
-				local offset = state.consumeStartOffset
-				if typeof(offset) ~= "Vector2" then
-					local startPos = state.consumeStartPos or state.displayPos
-					offset = startPos - targetPos
-				end
-				-- Ride with the eater and slide into its center, instead of
-				-- tweening from a stale world point while the blob moves.
-				state.displayPos = targetPos + offset * (1 - pull)
-				local startRadius = state.consumeStartRadius or state.radius
-				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
-				if target then
-					local fromR = target.mergeGrowFromRadius or target.radius
-					local toR = target.targetRadius or target.radius
-					target.radius = fromR + (toR - fromR) * shrink
-					target.radiusVelocity = 0
-					local fromMass = target.mergeGrowFromMass or 0
-					local toMass = target.mass or fromMass
-					target.displayMass = fromMass + (toMass - fromMass) * shrink
-				end
+				local easedProgress = progress ^ 3 * (progress * (progress * 6 - 15) + 10)
+				local startPos = state.consumeStartPos or state.displayPos
+				state.displayPos = startPos:Lerp(targetPos, easedProgress)
+				state.radius = math.max((state.consumeStartRadius or state.radius) * math.sqrt(1 - easedProgress), 0)
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
@@ -5576,6 +5546,9 @@ function Renderer:_resolveOwnCellVisualSeparation()
 
 	local passes = math.max(Config.Render.OwnCellVisualSeparationPasses or 1, 1)
 	local strength = math.clamp(Config.Render.OwnCellVisualSeparationStrength or 0.85, 0, 1)
+	if strength &lt;= 0 then
+		return
+	end
 	local scale = math.max(Config.Render.OwnCellVisualSeparationScale or 1, 1)
 
 	-- Unfreeze grace: from the instant we unfreeze, ramp strength and
@@ -5629,11 +5602,18 @@ function Renderer:_resolveOwnCellVisualSeparation()
 				local distanceSquared = delta:Dot(delta)
 				if distanceSquared &lt; minDist * minDist then
 					local dist = math.sqrt(distanceSquared)
+					local overlapRaw = minDist - dist
+					-- Ignore grazing contact. Constant shallow pushes made
+					-- siblings slide around each other instead of sitting.
+					if overlapRaw &lt; minDist * 0.08 then
+						continue
+					end
 					local dir = if dist &gt; 0.001 then delta / dist else Vector2.new(1, 0)
-					local overlap = (minDist - dist) * strength
+					local overlap = overlapRaw * strength
 					if overlapCap then
 						overlap = math.min(overlap, overlapCap)
 					end
+					overlap = math.min(overlap, math.max(a.radius, b.radius) * 0.12)
 					local aMass = math.max(a.mass or a.radius, 1)
 					local bMass = math.max(b.mass or b.radius, 1)
 					local totalMass = aMass + bMass
@@ -6005,8 +5985,6 @@ function Renderer:render(dt: number?)
 			if state.consumeIsMerge then
 				drawOptions.name = ""
 				drawOptions.score = ""
-			elseif (state.mergeGrowUntil or 0) &gt; os.clock() and typeof(state.displayMass) == "number" then
-				drawOptions.score = displayScore(state.displayMass)
 			elseif state.labelMass ~= state.mass or drawOptions.score == nil then
 				state.labelMass = state.mass
 				drawOptions.score = state.mass and displayScore(state.mass) or ""
@@ -8470,8 +8448,9 @@ Config.Cell = {
 	-- Pieces that did not split again keep their earlier timer and can
 	-- merge as soon as they overlap another ready sibling. No extra
 	-- pair queue — several ready pairs can swallow at the same time.
-	SamePlayerPushSpeed = 720, -- resolve overlap instead of letting siblings sit inside each other
-	SamePlayerPushStrength = 0.85,
+	SamePlayerPushSpeed = 180, -- enough to stop nesting without bouncing siblings into an orbit
+	SamePlayerPushStrength = 0.5,
+	SamePlayerPushStrength = 0.45,
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
@@ -8500,8 +8479,8 @@ Config.Cell = {
 	SweptEatingMinBoostSpeed = 80,
 	SweptEatingMinDistance = 6,
 	SweptEatingMaxDistance = 160,
-	SamePlayerPushPasses = 2,
-	LoadSamePlayerPushPasses = 2,
+	SamePlayerPushPasses = 1,
+	LoadSamePlayerPushPasses = 1,
 
 	-- ==================================================================
 	-- E repeats the normal Space split for every eligible cell twice.
@@ -8916,10 +8895,12 @@ Config.Render = {
 	-- Maintain visible sibling separation while the server's recombination
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
-	OwnCellVisualSeparationSeconds = 8,
+	-- Visual-only sibling shove fights cursor homing and makes pieces
+	-- revolve. Server overlap resolve is enough to keep them from nesting.
+	OwnCellVisualSeparationSeconds = 0,
 	OwnCellVisualSeparationPasses = 1,
-	OwnCellVisualSeparationStrength = 0.75,
-	OwnCellVisualSeparationScale = 1.02,
+	OwnCellVisualSeparationStrength = 0,
+	OwnCellVisualSeparationScale = 1,
 	-- Lightweight whole-image flex: native rounded edges, no sliced textures.
 	-- Filtered reactive flex, capped below 4%; no pixel snapping or idle-mode switch.
 	LiquidEdgeEnabled = true,
@@ -8990,11 +8971,10 @@ Config.Render = {
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
 	ConsumeFadeSeconds = 0.16,
-	-- Sibling swallow: the eaten cell rides the eater. The eater grows
-	-- as that cell slides in, so mass shows up with the swallow.
-	MergeAnimationSeconds = 2.2,
-	MergePullStart = 0.06,
-	MergeShrinkStart = 0.34,
+	-- Original sibling swallow: the eaten cell eases into the eater
+	-- while the eater's size catches up with a slower growth curve.
+	MergeAnimationSeconds = 1.05,
+	MergeGrowthSharpness = 5,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -14113,6 +14093,9 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
 					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
+						if minDist - dist &lt; 2 then
+							continue
+						end
 						local dir
 						if dist &gt; 0.001 then
 							dir = delta / dist
@@ -14142,6 +14125,15 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 
 						a.pos -= dir * overlap * aShare
 						b.pos += dir * overlap * bShare
+						local aBoost = a.boost or Vector2.zero
+						local bBoost = b.boost or Vector2.zero
+						local tangent = Vector2.new(-dir.Y, dir.X)
+						local spin = (bBoost - aBoost):Dot(tangent)
+						if math.abs(spin) &gt; 1 then
+							local kill = spin * 0.45
+							a.boost = aBoost + tangent * (kill * bShare)
+							b.boost = bBoost - tangent * (kill * aShare)
+						end
 						a.pos = self:_clampToWorld(a.pos, a.radius)
 						b.pos = self:_clampToWorld(b.pos, b.radius)
 					end
