@@ -3197,31 +3197,15 @@ local function normaliseAvatarDisplayMode(value): string
 	return DEFAULT_AVATAR_DISPLAY_MODE
 end
 
-local function movementVectorToTarget(target: Vector2?, pos: Vector2, radius: number)
-	if not target then
-		return Vector2.zero, 0
-	end
-
-	local offset = target - pos
-	local distance = offset.Magnitude
-	local deadZone = math.max(
-		Config.Player.MovementDeadZone,
-		radius * Config.Player.MovementDeadZoneRadiusScale
+local function movementVectorToTarget(renderer, pos: Vector2, radius: number)
+	return Config.moveVector(
+		renderer.localMoveTarget,
+		renderer.localMoveAim,
+		pos,
+		radius,
+		renderer.clusterMoveCenter,
+		renderer.ownMoveCellCount or 1
 	)
-	if distance &lt;= deadZone then
-		return Vector2.zero, 0
-	end
-
-	local slowDistance = math.max(
-		Config.Player.MovementSlowDistance,
-		radius * Config.Player.MovementSlowRadiusScale
-	)
-	local speedScale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
-	if speedScale &lt; 0.02 then
-		return Vector2.zero, 0
-	end
-
-	return offset / distance, speedScale
 end
 
 local function speedForMass(mass: number?): number
@@ -3746,6 +3730,8 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		-- visibly drift a bit before authoritative snapshots catch up.
 		localFrozen = false,
 		lastOwnCellCount = 0,
+		ownMoveCellCount = 0,
+		localMoveAim = nil,
 		ownSeparationScratch = {},
 		ejectedCollisionScratch = {},
 		hudAccumulator = 0,
@@ -3953,7 +3939,7 @@ function Renderer:predictEject(aim: Vector2?, target: Vector2?)
 		end
 		local inheritedVelocity = Vector2.zero
 		if not self.localFrozen then
-			local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, cell.displayPos, cell.radius)
+			local moveDir, moveScale = movementVectorToTarget(self, cell.displayPos, cell.radius)
 			inheritedVelocity = moveDir * speedForMass(cell.mass) * moveScale
 				+ (cell.splitVisualBoost or Vector2.zero)
 		end
@@ -4509,7 +4495,7 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 				and state.splitVisualBoost
 				and not self.localFrozen
 			then
-				local moveDir, moveScale = movementVectorToTarget(self.localMoveTarget, state.targetPos, radius)
+				local moveDir, moveScale = movementVectorToTarget(self, state.targetPos, radius)
 				local baseVelocity = moveDir * speedForMass(mass) * moveScale
 				local observedBoost = state.velocity - baseVelocity
 				local maxBoost = math.max(Config.Cell.SplitMaxBoost or 1650, 1)
@@ -4971,7 +4957,7 @@ function Renderer:_projectOwnAuthoritativeTarget(state)
 			maxLead
 		)
 		if leadSeconds &gt; 0 then
-			local dir, speedScale = movementVectorToTarget(self.localMoveTarget, target, state.targetRadius or state.radius)
+			local dir, speedScale = movementVectorToTarget(self, target, state.targetRadius or state.radius)
 			if speedScale &gt; 0 then
 				local leadScale = math.max(Config.Render.OwnCellPredictionLeadScale or 1, 0)
 				local delta = dir * speedForMass(state.mass) * speedScale * leadSeconds * leadScale
@@ -5066,7 +5052,7 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 		return
 	end
 
-	local dir, speedScale = movementVectorToTarget(self.localMoveTarget, state.displayPos, state.radius)
+	local dir, speedScale = movementVectorToTarget(self, state.displayPos, state.radius)
 	if self.localFrozen then
 		-- No mouse-driven movement while frozen.
 		speedScale = 0
@@ -5416,6 +5402,7 @@ function Renderer:step(dt: number?)
 	self.clusterMoveCenter = if count &gt; 1 then weighted / totalMass else nil
 	self.clusterMoveRadius = math.sqrt(totalMass) * Config.Cell.RadiusScale
 	self.clusterMaxSpeed = if count &gt; 1 and maxMass &gt; 0 then speedForMass(maxMass) else nil
+	self.ownMoveCellCount = count
 	self:_stepEntityStates(self.foodStates, dt)
 	self:_stepEntityStates(self.ejectedStates, dt)
 	self:_resolveEjectedVisualCollisions(dt)
@@ -7097,6 +7084,11 @@ Config.Player = {
 	MovementDeadZoneRadiusScale = 0.35,
 	MovementSlowDistance = 90,
 	MovementSlowRadiusScale = 1.2,
+	-- Split pieces all homed onto the same world cursor, so the blob
+	-- collapsed into a clump. When true and the player has 2+ cells,
+	-- every piece uses the same aim direction and the same speed scale
+	-- (from group center -&gt; cursor) instead of steering at the cursor.
+	SharedMultiCellSteering = true,
 	SpawnerBiasChance = 0.85,
 	SpawnerBiasMinDistance = 240,
 	SpawnerBiasMaxDistance = 760,
@@ -7123,8 +7115,8 @@ Config.Cell = {
 	RecombineMaxSeconds = 10,
 	MergePairInterval = 1.15, -- one local pair at a time per participating cell
 	MergeFinalPairInterval = 1.65, -- slower final stages, not a single-tick vacuum
-	SamePlayerPushSpeed = 60, -- maximum displacement per cell per second
-	SamePlayerPushStrength = 0.45,
+	SamePlayerPushSpeed = 720, -- resolve overlap instead of letting siblings sit inside each other
+	SamePlayerPushStrength = 0.85,
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
@@ -7153,8 +7145,8 @@ Config.Cell = {
 	SweptEatingMinBoostSpeed = 80,
 	SweptEatingMinDistance = 6,
 	SweptEatingMaxDistance = 160,
-	SamePlayerPushPasses = 1, -- was 2; single pass = smoother same-player resolution
-	LoadSamePlayerPushPasses = 1,
+	SamePlayerPushPasses = 2,
+	LoadSamePlayerPushPasses = 2,
 
 	-- ==================================================================
 	-- E repeats the normal Space split for every eligible cell twice.
@@ -7228,6 +7220,64 @@ function Config.clusterCappedMoveSpeed(speed: number, biggestCellSpeed: number?)
 		return speed
 	end
 	return math.min(speed, biggestCellSpeed * ratio)
+end
+
+-- One steering rule for server sim and client prediction.
+-- One cell: classic homing toward the cursor, with a per-cell deadzone.
+-- Multiple cells: identical direction + identical speed scale so pieces
+-- translate in parallel instead of collapsing onto the cursor point.
+function Config.moveVector(target: Vector2?, aim: Vector2?, pos: Vector2, radius: number, origin: Vector2?, ownCellCount: number)
+	local fallbackAim = Vector2.new(1, 0)
+	if typeof(aim) == "Vector2" and aim.Magnitude &gt; 0.001 then
+		fallbackAim = aim.Unit
+	end
+	if typeof(target) ~= "Vector2" then
+		return fallbackAim, 1
+	end
+
+	local shared = (ownCellCount or 1) &gt; 1 and Config.Player.SharedMultiCellSteering ~= false
+	if shared then
+		if typeof(origin) ~= "Vector2" then
+			return fallbackAim, 1
+		end
+		local offset = target - origin
+		local distance = offset.Magnitude
+		local deadZone = math.max(Config.Player.MovementDeadZone or 10, 0)
+		if distance &lt;= deadZone then
+			return Vector2.zero, 0
+		end
+		local slowDistance = math.max(Config.Player.MovementSlowDistance or 90, 1)
+		local speedScale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
+		if speedScale &lt; 0.02 then
+			return Vector2.zero, 0
+		end
+		if typeof(aim) == "Vector2" and aim.Magnitude &gt; 0.001 then
+			return fallbackAim, speedScale
+		end
+		if distance &gt; 0.001 then
+			return offset / distance, speedScale
+		end
+		return fallbackAim, speedScale
+	end
+
+	local offset = target - pos
+	local distance = offset.Magnitude
+	local deadZone = math.max(
+		Config.Player.MovementDeadZone or 10,
+		radius * (Config.Player.MovementDeadZoneRadiusScale or 0)
+	)
+	if distance &lt;= deadZone then
+		return Vector2.zero, 0
+	end
+	local slowDistance = math.max(
+		Config.Player.MovementSlowDistance or 90,
+		radius * (Config.Player.MovementSlowRadiusScale or 0)
+	)
+	local speedScale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
+	if speedScale &lt; 0.02 then
+		return Vector2.zero, 0
+	end
+	return offset / distance, speedScale
 end
 
 function Config.smallCellSplitScale(mass: number): number
@@ -7661,6 +7711,9 @@ Config.Tunables = {
 	{ path = "Player.HighMassDecayReferenceMass", label = "High Decay Reference Mass", type = "number", min = 1000, max = 10000000, step = 1000 },
 	{ path = "Player.HighMassDecayReferencePerSecond", label = "Decay at Reference / s", type = "number", min = 0, max = 1000000, step = 100 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
+	{ path = "Player.SharedMultiCellSteering",   label = "Parallel Split Steering",   type = "bool" },
+	{ path = "Cell.SamePlayerPushSpeed",         label = "Own-Cell Push Speed",       type = "number", min = 0,    max = 2000,  step = 10 },
+	{ path = "Cell.SamePlayerPushStrength",      label = "Own-Cell Push Strength",    type = "number", min = 0,    max = 1,     step = 0.05 },
 
 	-- Food
 	{ path = "Food.Mass",                        label = "Food Mass",                 type = "number", min = 1,    max = 500,   step = 1 },
@@ -11852,30 +11905,14 @@ function GameService:_cellAimDirection(state, cell): Vector2
 end
 
 function GameService:_cellMoveVector(state, cell)
-	if not state.input.target then
-		return state.input.aim, 1
-	end
-
-	local offset = state.input.target - cell.pos
-	local distance = offset.Magnitude
-	local deadZone = math.max(
-		Config.Player.MovementDeadZone,
-		cell.radius * Config.Player.MovementDeadZoneRadiusScale
+	return Config.moveVector(
+		state.input.target,
+		state.input.aim,
+		cell.pos,
+		cell.radius,
+		state.center,
+		state.cells and #state.cells or 1
 	)
-	if distance &lt;= deadZone then
-		return Vector2.zero, 0
-	end
-
-	local slowDistance = math.max(
-		Config.Player.MovementSlowDistance,
-		cell.radius * Config.Player.MovementSlowRadiusScale
-	)
-	local speedScale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
-	if speedScale &lt; 0.02 then
-		return Vector2.zero, 0
-	end
-
-	return offset / distance, speedScale
 end
 
 function GameService:_moveCells(dt: number)
