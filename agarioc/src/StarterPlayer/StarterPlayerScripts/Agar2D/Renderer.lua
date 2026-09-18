@@ -2311,6 +2311,7 @@ function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: num
 		drawOptions.width = nil
 		drawOptions.height = nil
 		drawOptions.rotation = nil
+		drawOptions.deformContent = nil
 		state.liquidLastPos = state.displayPos
 		state.liquidVelocity = Vector2.zero
 		state.liquidStretch = 0
@@ -2361,6 +2362,7 @@ function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: num
 	drawOptions.width = diameter * axisScale
 	drawOptions.height = diameter / axisScale
 	drawOptions.rotation = state.liquidRotation
+	drawOptions.deformContent = true
 end
 
 function Renderer:render(dt: number?)

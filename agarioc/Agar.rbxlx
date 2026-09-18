@@ -2225,6 +2225,7 @@ local function resetFrame(frame: Frame, parts)
 	if parts.skin then
 		parts.skin.Visible = false
 		parts.skin.Rotation = 0
+		parts.skin.ScaleType = Enum.ScaleType.Crop
 		parts.skin.Image = ""
 		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.skin.ImageTransparency = 0
@@ -2466,7 +2467,14 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 
 	if options then
 		if parts.skin then
-			setCached(parts, "skinRotation", parts.skin, "Rotation", -rotation)
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(
+				parts,
+				"skinScaleType",
+				parts.skin,
+				"ScaleType",
+				if options.deformContent then Enum.ScaleType.Stretch else Enum.ScaleType.Crop
+			)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -2479,7 +2487,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.avatar then
-			setCached(parts, "avatarRotation", parts.avatar, "Rotation", -rotation)
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			local overlayScale = options.overlayScale or 1
 			local overlaySize = if overlayScale &lt; 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
@@ -2488,7 +2496,13 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarTransparency", parts.avatar, "ImageTransparency", options.imageTransparency or 0)
 			setCached(parts, "avatarRectOffset", parts.avatar, "ImageRectOffset", options.imageRectOffset or Vector2.new(0, 0))
 			setCached(parts, "avatarRectSize", parts.avatar, "ImageRectSize", options.imageRectSize or Vector2.new(0, 0))
-			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", options.imageScaleType or Enum.ScaleType.Crop)
+			setCached(
+				parts,
+				"avatarScaleType",
+				parts.avatar,
+				"ScaleType",
+				if options.deformContent then Enum.ScaleType.Stretch else (options.imageScaleType or Enum.ScaleType.Crop)
+			)
 			if overlaySize then
 				parts.avatar.Size = UDim2.fromOffset(overlaySize, overlaySize)
 			else
@@ -2513,6 +2527,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	else
 		if parts.skin then
 			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", false)
 			setCached(parts, "skinImage", parts.skin, "Image", "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
@@ -5437,6 +5452,7 @@ function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: num
 		drawOptions.width = nil
 		drawOptions.height = nil
 		drawOptions.rotation = nil
+		drawOptions.deformContent = nil
 		state.liquidLastPos = state.displayPos
 		state.liquidVelocity = Vector2.zero
 		state.liquidStretch = 0
@@ -5487,6 +5503,7 @@ function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: num
 	drawOptions.width = diameter * axisScale
 	drawOptions.height = diameter / axisScale
 	drawOptions.rotation = state.liquidRotation
+	drawOptions.deformContent = true
 end
 
 function Renderer:render(dt: number?)
