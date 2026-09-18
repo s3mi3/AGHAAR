@@ -2115,11 +2115,11 @@ function Camera2D:_applyOwnRadius(ownRadius: number)
 end
 
 function Camera2D:_refreshTargetZoom()
-	self.manualZoom = math.clamp(self.manualZoom, Config.Render.ManualZoomMin or 0.55, Config.Render.ManualZoomMax or 1.85)
+	self.manualZoom = math.clamp(self.manualZoom, Config.Render.ManualZoomMin or 0.2, Config.Render.ManualZoomMax or 20)
 	self.targetZoom = math.clamp(
 		self.baseTargetZoom * self.manualZoom,
-		Config.Render.MinZoom or 0.22,
-		Config.Render.MaxZoom or 1.9
+		Config.Render.MinZoom or 0.08,
+		Config.Render.MaxZoom or 24
 	)
 end
 
@@ -4367,9 +4367,17 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartOffset = state.displayPos - (bestTarget.displayPos or bestTarget.targetPos)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
-			bestTarget.snapMassGain = true
 			if isMerge then
+				-- Grow the eater as this cell slides in, not at merge start.
+				bestTarget.mergeGrowFromRadius = bestTarget.radius
+				bestTarget.mergeGrowFromMass = bestTarget.displayMass or bestTarget.mass or 0
+				bestTarget.mergeGrowUntil = now + duration
+				bestTarget.feedGrow = false
+				bestTarget.feedSlices = nil
+				bestTarget.snapMassGain = nil
 				self:_exciteLiquidEdge(bestTarget, now, 0.8)
+			else
+				bestTarget.snapMassGain = true
 			end
 			state.extrapolate = false
 			state.isOwn = false
@@ -4529,35 +4537,42 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			self:_startSplitFlex(state, direction, os.clock(), true)
 		end
 		if kind == "cell" and radius &gt; (state.targetRadius or state.radius or 0) + 0.01 then
-			-- Only cell-eat/merge sets snapMassGain. A patch of food in one
-			-- tick used to exceed the old mass threshold and pop like a merge.
-			local snap = state.snapMassGain == true
-			state.snapMassGain = nil
-			if snap then
-				local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
-				state.radius = state.radius + (radius - state.radius) * pop
-				state.radiusVelocity = 0
+			-- Merge size is driven by the swallow animation.
+			if (state.mergeGrowUntil or 0) &gt; os.clock() then
 				state.feedGrow = false
 				state.feedSlices = nil
-				state.feedGoalRadius = nil
+				state.snapMassGain = nil
 			else
-				-- Queue each food/pellet radius delta so overlapping meals
-				-- ease in-out instead of kicking the growth rate.
-				state.feedGrow = true
-				local previousGoal = state.feedGoalRadius or state.targetRadius or state.radius
-				local delta = radius - previousGoal
-				if delta &gt; 0.001 then
-					local slices = state.feedSlices
-					if typeof(slices) ~= "table" then
-						slices = {}
-						state.feedSlices = slices
+				-- Only cell-eat/merge sets snapMassGain. A patch of food in one
+				-- tick used to exceed the old mass threshold and pop like a merge.
+				local snap = state.snapMassGain == true
+				state.snapMassGain = nil
+				if snap then
+					local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
+					state.radius = state.radius + (radius - state.radius) * pop
+					state.radiusVelocity = 0
+					state.feedGrow = false
+					state.feedSlices = nil
+					state.feedGoalRadius = nil
+				else
+					-- Queue each food/pellet radius delta so overlapping meals
+					-- ease in-out instead of kicking the growth rate.
+					state.feedGrow = true
+					local previousGoal = state.feedGoalRadius or state.targetRadius or state.radius
+					local delta = radius - previousGoal
+					if delta &gt; 0.001 then
+						local slices = state.feedSlices
+						if typeof(slices) ~= "table" then
+							slices = {}
+							state.feedSlices = slices
+						end
+						slices[#slices + 1] = {
+							delta = delta,
+							elapsed = 0,
+							weight = 0,
+						}
+						state.feedGoalRadius = radius
 					end
-					slices[#slices + 1] = {
-						delta = delta,
-						elapsed = 0,
-						weight = 0,
-					}
-					state.feedGoalRadius = radius
 				end
 			end
 		end
@@ -4925,6 +4940,9 @@ function Renderer:_moveOwnCellWithBarrierCollision(pos: Vector2, delta: Vector2,
 end
 
 function Renderer:_resolveOwnBarrierPrediction()
+	if self.localFrozen then
+		return
+	end
 	for _, cellState in self.cellStates do
 		if cellState.isOwn and cellState.confirmed then
 			cellState.displayPos = self:_resolveCircleAgainstBarriers(cellState.displayPos, cellState.radius)
@@ -5073,6 +5091,15 @@ function Renderer:_projectOwnAuthoritativeTarget(state)
 end
 
 function Renderer:_stepCellRadius(state, dt: number)
+	if (state.mergeGrowUntil or 0) &gt; os.clock() then
+		return
+	end
+	if state.mergeGrowUntil then
+		state.mergeGrowUntil = nil
+		state.mergeGrowFromRadius = nil
+		state.mergeGrowFromMass = nil
+		state.displayMass = nil
+	end
 	local target = state.targetRadius or state.radius
 	local current = state.radius
 	local growing = target &gt; current
@@ -5208,11 +5235,9 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 
 	local dir, speedScale = movementVectorToTarget(self, state.displayPos, state.radius)
 	if self.localFrozen then
-		-- Hard-stop where the cell currently is. Reconciling onto the
-		-- server pose while visual separation is off sucked freeze-split
-		-- piles back together each time F was pressed.
+		-- Stay parked. Barrier resolution while frozen shoved overlapping
+		-- pieces around each other as they changed size from feeding.
 		self:_stepCellRadius(state, dt)
-		state.displayPos = self:_resolveCircleAgainstBarriers(state.displayPos, state.radius)
 		return
 	end
 	local moveSpeed = Config.clusterCappedMoveSpeed(speedForMass(state.mass), self.clusterMaxSpeed)
@@ -5292,6 +5317,15 @@ function Renderer:_stepEntityStates(states, dt: number)
 				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
 				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
+				if target then
+					local fromR = target.mergeGrowFromRadius or target.radius
+					local toR = target.targetRadius or target.radius
+					target.radius = fromR + (toR - fromR) * shrink
+					target.radiusVelocity = 0
+					local fromMass = target.mergeGrowFromMass or 0
+					local toMass = target.mass or fromMass
+					target.displayMass = fromMass + (toMass - fromMass) * shrink
+				end
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
@@ -5923,6 +5957,8 @@ function Renderer:render(dt: number?)
 			if state.consumeIsMerge then
 				drawOptions.name = ""
 				drawOptions.score = ""
+			elseif (state.mergeGrowUntil or 0) &gt; os.clock() and typeof(state.displayMass) == "number" then
+				drawOptions.score = displayScore(state.displayMass)
 			elseif state.labelMass ~= state.mass or drawOptions.score == nil then
 				state.labelMass = state.mass
 				drawOptions.score = state.mass and displayScore(state.mass) or ""
@@ -7587,7 +7623,8 @@ Config.Shop = {
 -- (velocity is paused, not zeroed), so a mid-flight split resumes
 -- its trajectory when you unfreeze. Release also adds a short
 -- outward spring so a frozen stack pops apart instead of oozing
--- into a clump. Merging still happens normally while frozen.
+-- into a clump. Sibling merges pause while frozen so freeze-feeding
+-- cannot swallow the piece you aimed at.
 -- Debounce prevents accidental double-taps from cancelling.
 -- ==================================================================
 Config.Freeze = {
@@ -7633,7 +7670,7 @@ Config.Ejected = {
 	Radius = 4,
 	NozzleOffset = 2,
 	Cost = 0,
-	FrozenCost = 10,
+	FrozenCost = 0,
 	MinFireMass = 0,
 	EatMinCellMass = 1,
 	TouchPickupPadding = 0,
@@ -7644,7 +7681,7 @@ Config.Ejected = {
 	-- MinScale = 1 so the receiving cell always gets the full transfer.
 	SelfRecoveryStartScore = 400000,
 	SelfRecoveryEndScore = 2400000,
-	SelfRecoveryMinScale = 0.5,
+	SelfRecoveryMinScale = 1,
 	SelfRecoveryCurveExponent = 0.7,
 	Speed = 200,
 	DragPerSecond = 2,
@@ -7782,10 +7819,10 @@ Config.Render = {
 	CellMinZIndex = 7,
 	HudRefreshHz = 8,
 	CameraSharpness = 7, -- was 10; softer camera follow
-	MinZoom = 0.11,
-	MaxZoom = 4,
-	ManualZoomMin = 0.35,
-	ManualZoomMax = 3,
+	MinZoom = 0.08,
+	MaxZoom = 24,
+	ManualZoomMin = 0.2,
+	ManualZoomMax = 20,
 	AgarZoomReferenceSize = 160,
 	AgarZoomExponent = 0.4,
 	AgarZoomReferenceWidth = 1920,
@@ -7829,9 +7866,8 @@ Config.Render = {
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
 	ConsumeFadeSeconds = 0.16,
-	-- Sibling swallow: the eaten cell rides the eater. The eater pops
-	-- to its new size immediately so the camera does not zoom in on a
-	-- still-small blob.
+	-- Sibling swallow: the eaten cell rides the eater. The eater grows
+	-- as that cell slides in, so mass shows up with the swallow.
 	MergeAnimationSeconds = 2.2,
 	MergePullStart = 0.06,
 	MergeShrinkStart = 0.34,
@@ -7880,6 +7916,8 @@ Config.Tunables = {
 	{ path = "Render.CellGrowthSharpness",       label = "Mass Gain Snap",            type = "number", min = 4,    max = 80,    step = 1 },
 	{ path = "Render.FeedGrowthSeconds",         label = "Feed Size Ease (s)",        type = "number", min = 0.2,  max = 4,     step = 0.05 },
 	{ path = "Render.AutoZoomIn",                label = "Auto Zoom In",              type = "bool" },
+	{ path = "Render.ManualZoomMax",             label = "Max Zoom In",               type = "number", min = 1,    max = 40,    step = 0.5 },
+	{ path = "Render.MaxZoom",                   label = "Zoom Hard Cap",             type = "number", min = 1,    max = 40,    step = 0.5 },
 	{ path = "Cell.MultiSplitFanRadians",        label = "Multi-Split Fan (rad)",     type = "number", min = 0,    max = 1.5,   step = 0.01 },
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 0,    max = 10,    step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
@@ -10937,7 +10975,7 @@ function GameService:_ejectedMassGain(cell, ejected, gainContext: string?): numb
 	local playerScore = self:_playerMass(cell.owner)
 	local startScore = math.max(ejectedConfig.SelfRecoveryStartScore or 400000, 0)
 	local endScore = math.max(ejectedConfig.SelfRecoveryEndScore or 2400000, startScore + 1)
-	local minScale = math.clamp(ejectedConfig.SelfRecoveryMinScale or 0.05, 0, 1)
+	local minScale = math.clamp(ejectedConfig.SelfRecoveryMinScale or 1, 0, 1)
 	local alpha = math.clamp((playerScore - startScore) / (endScore - startScore), 0, 1)
 	local exponent = ejectedConfig.SelfRecoveryCurveExponent or 1
 	if exponent ~= 1 then
@@ -11645,7 +11683,7 @@ function GameService:_handleInput(player: Player, payload)
 	end
 
 	if typeof(payload.zm) == "number" then
-		local nextZoom = math.clamp(payload.zm, Config.Render.MinZoom or 0.22, Config.Render.MaxZoom or 1.9)
+		local nextZoom = math.clamp(payload.zm, Config.Render.MinZoom or 0.08, Config.Render.MaxZoom or 24)
 		if math.abs(nextZoom - input.zoom) &gt;= 0.03 then
 			state.needsStaticSnapshot = true
 		end
@@ -11910,8 +11948,8 @@ end
 --    owner's cells.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
---  * _handleEating is NOT gated, so touching cells past their
---    recombine timer still merge normally.
+--  * Sibling merges pause so freeze-feeding cannot swallow a piece.
+--    Enemy eats and pellets still resolve.
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
 function GameService:_applyUnfreezeRelease(state)
@@ -12936,6 +12974,13 @@ function GameService:_handleEating()
 		local eater = self.cells[event.eaterId]
 		local target = event.kind == "cell" and self.cells[event.targetId] or nil
 		if eater and target and eater.ownerUserId == target.ownerUserId then
+			local owner = self.playersByUserId[eater.ownerUserId]
+			if owner and owner.frozen then
+				-- Freeze is for parking and feeding. Sibling swallow while
+				-- frozen pulled pieces around each other and ate the cell
+				-- you were trying to feed.
+				continue
+			end
 			event.mergeDistance = Vec2.distanceSquared(eater.pos, target.pos)
 				/ math.max((eater.radius + target.radius) ^ 2, 1)
 			event.mergeReadyAt = math.max(eater.canRecombineAt or 0, target.canRecombineAt or 0)
@@ -13601,7 +13646,7 @@ end
 
 function GameService:_snapshotRadius(state): number
 	local view = state.input.view
-	local zoom = math.clamp(state.input.zoom or 1, Config.Render.MinZoom or 0.22, Config.Render.MaxZoom or 1.9)
+	local zoom = math.clamp(state.input.zoom or 1, Config.Render.MinZoom or 0.08, Config.Render.MaxZoom or 24)
 	local maxView = math.max(view.X, view.Y) / zoom
 	local playerCount = self:_playerCount()
 	local padding = Config.Network.ViewportPadding
