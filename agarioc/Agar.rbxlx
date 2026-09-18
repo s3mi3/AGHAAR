@@ -7221,10 +7221,12 @@ Config.Render = {
 	OwnCellPredictionMaxLeadSeconds = 0.22,
 	OwnCellPredictionLeadExtraSeconds = 0.025,
 	OwnCellPredictionLeadScale = 1,
-	OwnCellVisualSeparationSeconds = 12,
-	OwnCellVisualSeparationPasses = 2, -- restored to 2 for firm separation on normal splits
-	OwnCellVisualSeparationStrength = 0.75, -- was 0.55; firmer per-frame push
-	OwnCellVisualSeparationScale = 1.02,
+	-- The server is authoritative for sibling-cell separation. Running a
+	-- second client solver caused visible push/pull and rubber-banding.
+	OwnCellVisualSeparationSeconds = 0,
+	OwnCellVisualSeparationPasses = 1,
+	OwnCellVisualSeparationStrength = 0,
+	OwnCellVisualSeparationScale = 1,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,
