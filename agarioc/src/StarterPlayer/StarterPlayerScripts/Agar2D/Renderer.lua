@@ -1704,6 +1704,9 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 
 	for _, cellState in self.cellStates do
 		if cellState.mass and cellState.mass >= (Config.Ejected.EatMinCellMass or 18) then
+			if cellState.isOwn and state.targetCell and cellState ~= state.targetCell then
+				continue
+			end
 			local waitingForSource = cellState.isOwn
 				and cellState == state.sourceCell
 				and now < (state.consumeAfter or 0)
@@ -1716,7 +1719,9 @@ function Renderer:_predictedEjectedWasConsumed(state, now: number): boolean
 					local padding = Config.Ejected.TouchPickupPadding or 0
 					local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 					local pelletRadius = state.radius or Config.Ejected.Radius
-					local touchDistance = math.max(targetRadius - pelletRadius * coverage + padding, 0)
+					local touchDistance = if state.targetCell == cellState
+						then math.max(targetRadius + padding, 0)
+						else math.max(targetRadius - pelletRadius * coverage + padding, 0)
 					if movingPointTouchesCircle(state, cellState.displayPos, touchDistance) then
 						return true
 					end
@@ -2219,10 +2224,15 @@ function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: num
 	local pickupRadius = state.radius or state.targetRadius or 0
 	local now = os.clock()
 	for _, cell in candidates do
+		if state.targetCell and cell ~= state.targetCell then
+			continue
+		end
 		local waitingForSource = cell == state.sourceCell and now < (state.consumeAfter or 0)
 		if cell.mass >= minMass and not waitingForSource then
 			local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
-			local touchDistance = math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
+			local touchDistance = if state.targetCell == cell
+				then math.max(cell.radius + (padding or 0), 0)
+				else math.max(cell.radius - pickupRadius * coverage + (padding or 0), 0)
 			if movingPointTouchesCircle(state, cell.displayPos, touchDistance) then
 				return true
 			end

@@ -298,6 +298,14 @@ local function ejectedTouchPickupDistance(collector, ejected): number
 	-- Padding remains available as a small inward/outward tuning offset.
 	local coverage = math.max(Config.Ejected.PickupCoverage or 1, 0)
 	local padding = Config.Ejected.TouchPickupPadding or 0
+	if ejected.targetCellId == collector.id
+		and ejected.ownerUserId == collector.ownerUserId
+	then
+		-- A locked self-feed pellet is considered received when its center
+		-- enters the intended cell. This remains visually contained while
+		-- avoiding misses on very small, moving receivers.
+		return math.max(collector.radius + padding, 0)
+	end
 	return math.max(collector.radius - ejected.radius * coverage + padding, 0)
 end
 
