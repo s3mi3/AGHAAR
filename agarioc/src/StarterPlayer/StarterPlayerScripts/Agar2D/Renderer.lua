@@ -1283,6 +1283,13 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		if kind == "cell"
 			and typeof(mass) == "number"
 			and typeof(state.mass) == "number"
+			and mass - state.mass >= math.max(Config.Render.LiquidRippleMinMassGain or 2, 0)
+		then
+			state.liquidRippleStartedAt = os.clock()
+		end
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
 			and mass < state.mass * 0.8
 		then
 			state.lastMassDropSerial = serial
@@ -2303,66 +2310,29 @@ function Renderer:_updateHud(dt: number)
 	end
 end
 
-function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: number, drawOptions, dt: number)
-	local renderConfig = Config.Render
-	if renderConfig.LiquidBlobEnabled == false
-		or screenRadius < math.max(renderConfig.LiquidBlobMinPixels or 9, 1)
-	then
-		drawOptions.width = nil
-		drawOptions.height = nil
-		drawOptions.rotation = nil
-		drawOptions.deformContent = nil
-		state.liquidLastPos = state.displayPos
-		state.liquidVelocity = Vector2.zero
-		state.liquidStretch = 0
+function Renderer:_applyLiquidBorderAnimation(state, drawOptions)
+	-- The cell body and artwork stay perfectly still. A mass gain launches
+	-- translucent rings from the edge toward the center like disturbed water.
+	drawOptions.width = nil
+	drawOptions.height = nil
+	drawOptions.rotation = nil
+	drawOptions.deformContent = nil
+
+	local startedAt = state.liquidRippleStartedAt
+	local duration = math.max(Config.Render.LiquidRippleDuration or 0.48, 0.01)
+	if Config.Render.LiquidRippleEnabled == false or not startedAt then
+		drawOptions.liquidRippleProgress = nil
 		return
 	end
 
-	local safeDt = math.max(dt, 1 / 240)
-	local rawVelocity = Vector2.zero
-	if state.liquidLastPos then
-		local offset = state.displayPos - state.liquidLastPos
-		-- Snapshot corrections and teleports should not create a one-frame
-		-- spike that makes the blob look like a needle.
-		if offset.Magnitude <= math.max(state.radius * 4, 80) then
-			rawVelocity = offset / safeDt
-		end
+	local progress = (os.clock() - startedAt) / duration
+	if progress >= 1 then
+		state.liquidRippleStartedAt = nil
+		drawOptions.liquidRippleProgress = nil
+		return
 	end
-	state.liquidLastPos = state.displayPos
-
-	local sharpness = math.max(renderConfig.LiquidBlobSharpness or 9, 0.01)
-	local alpha = 1 - math.exp(-safeDt * sharpness)
-	state.liquidVelocity = (state.liquidVelocity or rawVelocity):Lerp(rawVelocity, alpha)
-	local velocity = state.liquidVelocity
-	local speed = velocity.Magnitude
-	local speedReference = math.max(renderConfig.LiquidBlobSpeedForMaxStretch or 500, 1)
-	local moveStretch = math.max(renderConfig.LiquidBlobMoveStretch or 0.075, 0)
-		* math.clamp(speed / speedReference, 0, 1)
-
-	local wobbleHz = math.max(renderConfig.LiquidBlobWobbleHz or 0.7, 0)
-	local phase = os.clock() * wobbleHz * math.pi * 2 + id * 2.399
-	local idleStretch = math.max(renderConfig.LiquidBlobIdleStretch or 0.025, 0)
-		* (0.55 + math.sin(phase) * 0.45)
-	local targetStretch = moveStretch + idleStretch
-	state.liquidStretch = (state.liquidStretch or 0) + (targetStretch - (state.liquidStretch or 0)) * alpha
-
-	local desiredRotation
-	if speed > 3 then
-		desiredRotation = math.deg(math.atan(velocity.Y, velocity.X))
-	else
-		desiredRotation = math.deg(phase * 0.35)
-	end
-	local currentRotation = state.liquidRotation or desiredRotation
-	local rotationDelta = (desiredRotation - currentRotation + 180) % 360 - 180
-	state.liquidRotation = currentRotation + rotationDelta * alpha
-
-	-- Preserve approximate area while stretching along one axis.
-	local axisScale = 1 + math.max(state.liquidStretch, 0)
-	local diameter = screenRadius * 2
-	drawOptions.width = diameter * axisScale
-	drawOptions.height = diameter / axisScale
-	drawOptions.rotation = state.liquidRotation
-	drawOptions.deformContent = true
+	drawOptions.liquidRippleProgress = math.clamp(progress, 0, 1)
+	drawOptions.liquidRippleDepth = Config.Render.LiquidRippleDepth or 0.18
 end
 
 function Renderer:render(dt: number?)
@@ -2474,7 +2444,7 @@ function Renderer:render(dt: number?)
 				drawOptions.image = avatarImage
 				drawOptions.imageScaleType = avatarScaleType
 			end
-			self:_applyLiquidBlobAnimation(id, state, screenRadius, drawOptions, dt)
+			self:_applyLiquidBorderAnimation(state, drawOptions)
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
 	end

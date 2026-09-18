@@ -452,15 +452,12 @@ Config.Render = {
 	OwnCellVisualSeparationPasses = 2,
 	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
-	-- Client-only liquid blob deformation. Motion produces a soft stretch
-	-- while a low-amplitude idle wobble keeps stationary cells organic.
-	LiquidBlobEnabled = true,
-	LiquidBlobIdleStretch = 0.025,
-	LiquidBlobMoveStretch = 0.075,
-	LiquidBlobSpeedForMaxStretch = 500,
-	LiquidBlobWobbleHz = 0.7,
-	LiquidBlobSharpness = 9,
-	LiquidBlobMinPixels = 9,
+	-- Client-only liquid surface response. Gaining mass sends several
+	-- translucent border rings inward without rotating or deforming skins.
+	LiquidRippleEnabled = true,
+	LiquidRippleDuration = 0.48,
+	LiquidRippleDepth = 0.18,
+	LiquidRippleMinMassGain = 2,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,

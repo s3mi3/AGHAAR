@@ -2209,6 +2209,40 @@ local function ensureSerrations(frame: Frame, parts)
 	end
 end
 
+local function ensureLiquidRipples(frame: Frame, parts)
+	if parts.liquidRipples then
+		return
+	end
+
+	parts.liquidRipples = {}
+	for index = 1, 3 do
+		local ring = Instance.new("Frame")
+		ring.Name = "LiquidRipple"
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		ring.BackgroundTransparency = 1
+		ring.BorderSizePixel = 0
+		ring.Position = UDim2.fromScale(0.5, 0.5)
+		ring.Size = UDim2.fromScale(1, 1)
+		ring.Visible = false
+		ring.Parent = frame
+
+		local corner = Instance.new("UICorner")
+		corner.CornerRadius = UDim.new(1, 0)
+		corner.Parent = ring
+
+		local stroke = Instance.new("UIStroke")
+		stroke.Color = Color3.fromRGB(255, 255, 255)
+		stroke.Thickness = 1.5
+		stroke.Transparency = 1
+		stroke.Parent = ring
+
+		parts.liquidRipples[index] = {
+			frame = ring,
+			stroke = stroke,
+		}
+	end
+end
+
 local function resetFrame(frame: Frame, parts)
 	parts.cache = {}
 	frame.Visible = false
@@ -2259,6 +2293,11 @@ local function resetFrame(frame: Frame, parts)
 			tooth.Visible = false
 		end
 	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.Visible = false
+		end
+	end
 end
 
 local function applyZIndex(frame: Frame, parts, zIndex: number)
@@ -2285,6 +2324,11 @@ local function applyZIndex(frame: Frame, parts, zIndex: number)
 	if parts.serrations then
 		for _, tooth in parts.serrations do
 			tooth.ZIndex = zIndex
+		end
+	end
+	if parts.liquidRipples then
+		for _, ripple in parts.liquidRipples do
+			ripple.frame.ZIndex = zIndex + 3
 		end
 	end
 end
@@ -2435,6 +2479,9 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	if options and options.serrated then
 		ensureSerrations(frame, parts)
 	end
+	if options and options.liquidRippleProgress then
+		ensureLiquidRipples(frame, parts)
+	end
 	local zIndex = options and options.zIndex or self.zIndex
 	applyZIndex(frame, parts, zIndex)
 	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
@@ -2446,8 +2493,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	frame.Position = UDim2.fromOffset(x, y)
 	frame.Size = UDim2.fromOffset(width, height)
-	local rotation = options and options.rotation or 0
-	setCached(parts, "frameRotation", frame, "Rotation", rotation)
+	setCached(parts, "frameRotation", frame, "Rotation", 0)
 
 	if parts.stroke then
 		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
@@ -2468,13 +2514,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	if options then
 		if parts.skin then
 			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
-			setCached(
-				parts,
-				"skinScaleType",
-				parts.skin,
-				"ScaleType",
-				if options.deformContent then Enum.ScaleType.Stretch else Enum.ScaleType.Crop
-			)
+			setCached(parts, "skinScaleType", parts.skin, "ScaleType", Enum.ScaleType.Crop)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -2496,13 +2536,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarTransparency", parts.avatar, "ImageTransparency", options.imageTransparency or 0)
 			setCached(parts, "avatarRectOffset", parts.avatar, "ImageRectOffset", options.imageRectOffset or Vector2.new(0, 0))
 			setCached(parts, "avatarRectSize", parts.avatar, "ImageRectSize", options.imageRectSize or Vector2.new(0, 0))
-			setCached(
-				parts,
-				"avatarScaleType",
-				parts.avatar,
-				"ScaleType",
-				if options.deformContent then Enum.ScaleType.Stretch else (options.imageScaleType or Enum.ScaleType.Crop)
-			)
+			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", options.imageScaleType or Enum.ScaleType.Crop)
 			if overlaySize then
 				parts.avatar.Size = UDim2.fromOffset(overlaySize, overlaySize)
 			else
@@ -2515,7 +2549,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.labelStack then
-			setCached(parts, "labelRotation", parts.labelStack, "Rotation", -rotation)
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius &gt;= 18)
 			if parts.nameLabel then
 				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
@@ -2544,6 +2578,29 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		if parts.labelStack then
 			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
+		end
+	end
+
+	if parts.liquidRipples then
+		local progress = options and options.liquidRippleProgress
+		local depth = math.clamp(options and options.liquidRippleDepth or 0.18, 0, 0.5)
+		for index, ripple in parts.liquidRipples do
+			local delay = (index - 1) * 0.14
+			local waveProgress = if progress then (progress - delay) / math.max(1 - delay, 0.01) else -1
+			local visible = waveProgress &gt;= 0 and waveProgress &lt; 1
+			setCached(parts, "liquidVisible" .. index, ripple.frame, "Visible", visible)
+			if visible then
+				waveProgress = math.clamp(waveProgress, 0, 1)
+				local sizeScale = 1 - depth * waveProgress
+				ripple.frame.Size = UDim2.fromScale(sizeScale, sizeScale)
+				setCached(
+					parts,
+					"liquidTransparency" .. index,
+					ripple.stroke,
+					"Transparency",
+					0.18 + waveProgress * 0.82
+				)
+			end
 		end
 	end
 
@@ -4424,6 +4481,13 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		if kind == "cell"
 			and typeof(mass) == "number"
 			and typeof(state.mass) == "number"
+			and mass - state.mass &gt;= math.max(Config.Render.LiquidRippleMinMassGain or 2, 0)
+		then
+			state.liquidRippleStartedAt = os.clock()
+		end
+		if kind == "cell"
+			and typeof(mass) == "number"
+			and typeof(state.mass) == "number"
 			and mass &lt; state.mass * 0.8
 		then
 			state.lastMassDropSerial = serial
@@ -5444,66 +5508,29 @@ function Renderer:_updateHud(dt: number)
 	end
 end
 
-function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: number, drawOptions, dt: number)
-	local renderConfig = Config.Render
-	if renderConfig.LiquidBlobEnabled == false
-		or screenRadius &lt; math.max(renderConfig.LiquidBlobMinPixels or 9, 1)
-	then
-		drawOptions.width = nil
-		drawOptions.height = nil
-		drawOptions.rotation = nil
-		drawOptions.deformContent = nil
-		state.liquidLastPos = state.displayPos
-		state.liquidVelocity = Vector2.zero
-		state.liquidStretch = 0
+function Renderer:_applyLiquidBorderAnimation(state, drawOptions)
+	-- The cell body and artwork stay perfectly still. A mass gain launches
+	-- translucent rings from the edge toward the center like disturbed water.
+	drawOptions.width = nil
+	drawOptions.height = nil
+	drawOptions.rotation = nil
+	drawOptions.deformContent = nil
+
+	local startedAt = state.liquidRippleStartedAt
+	local duration = math.max(Config.Render.LiquidRippleDuration or 0.48, 0.01)
+	if Config.Render.LiquidRippleEnabled == false or not startedAt then
+		drawOptions.liquidRippleProgress = nil
 		return
 	end
 
-	local safeDt = math.max(dt, 1 / 240)
-	local rawVelocity = Vector2.zero
-	if state.liquidLastPos then
-		local offset = state.displayPos - state.liquidLastPos
-		-- Snapshot corrections and teleports should not create a one-frame
-		-- spike that makes the blob look like a needle.
-		if offset.Magnitude &lt;= math.max(state.radius * 4, 80) then
-			rawVelocity = offset / safeDt
-		end
+	local progress = (os.clock() - startedAt) / duration
+	if progress &gt;= 1 then
+		state.liquidRippleStartedAt = nil
+		drawOptions.liquidRippleProgress = nil
+		return
 	end
-	state.liquidLastPos = state.displayPos
-
-	local sharpness = math.max(renderConfig.LiquidBlobSharpness or 9, 0.01)
-	local alpha = 1 - math.exp(-safeDt * sharpness)
-	state.liquidVelocity = (state.liquidVelocity or rawVelocity):Lerp(rawVelocity, alpha)
-	local velocity = state.liquidVelocity
-	local speed = velocity.Magnitude
-	local speedReference = math.max(renderConfig.LiquidBlobSpeedForMaxStretch or 500, 1)
-	local moveStretch = math.max(renderConfig.LiquidBlobMoveStretch or 0.075, 0)
-		* math.clamp(speed / speedReference, 0, 1)
-
-	local wobbleHz = math.max(renderConfig.LiquidBlobWobbleHz or 0.7, 0)
-	local phase = os.clock() * wobbleHz * math.pi * 2 + id * 2.399
-	local idleStretch = math.max(renderConfig.LiquidBlobIdleStretch or 0.025, 0)
-		* (0.55 + math.sin(phase) * 0.45)
-	local targetStretch = moveStretch + idleStretch
-	state.liquidStretch = (state.liquidStretch or 0) + (targetStretch - (state.liquidStretch or 0)) * alpha
-
-	local desiredRotation
-	if speed &gt; 3 then
-		desiredRotation = math.deg(math.atan(velocity.Y, velocity.X))
-	else
-		desiredRotation = math.deg(phase * 0.35)
-	end
-	local currentRotation = state.liquidRotation or desiredRotation
-	local rotationDelta = (desiredRotation - currentRotation + 180) % 360 - 180
-	state.liquidRotation = currentRotation + rotationDelta * alpha
-
-	-- Preserve approximate area while stretching along one axis.
-	local axisScale = 1 + math.max(state.liquidStretch, 0)
-	local diameter = screenRadius * 2
-	drawOptions.width = diameter * axisScale
-	drawOptions.height = diameter / axisScale
-	drawOptions.rotation = state.liquidRotation
-	drawOptions.deformContent = true
+	drawOptions.liquidRippleProgress = math.clamp(progress, 0, 1)
+	drawOptions.liquidRippleDepth = Config.Render.LiquidRippleDepth or 0.18
 end
 
 function Renderer:render(dt: number?)
@@ -5615,7 +5642,7 @@ function Renderer:render(dt: number?)
 				drawOptions.image = avatarImage
 				drawOptions.imageScaleType = avatarScaleType
 			end
-			self:_applyLiquidBlobAnimation(id, state, screenRadius, drawOptions, dt)
+			self:_applyLiquidBorderAnimation(state, drawOptions)
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
 	end
@@ -7333,15 +7360,12 @@ Config.Render = {
 	OwnCellVisualSeparationPasses = 2,
 	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
-	-- Client-only liquid blob deformation. Motion produces a soft stretch
-	-- while a low-amplitude idle wobble keeps stationary cells organic.
-	LiquidBlobEnabled = true,
-	LiquidBlobIdleStretch = 0.025,
-	LiquidBlobMoveStretch = 0.075,
-	LiquidBlobSpeedForMaxStretch = 500,
-	LiquidBlobWobbleHz = 0.7,
-	LiquidBlobSharpness = 9,
-	LiquidBlobMinPixels = 9,
+	-- Client-only liquid surface response. Gaining mass sends several
+	-- translucent border rings inward without rotating or deforming skins.
+	LiquidRippleEnabled = true,
+	LiquidRippleDuration = 0.48,
+	LiquidRippleDepth = 0.18,
+	LiquidRippleMinMassGain = 2,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,
