@@ -118,13 +118,12 @@ Config.Cell = {
 	-- speed * ratio) so they can't sprint away from the pack.
 	-- CohesionStrength (0..1) adds a gentle pull toward the group's
 	-- center of mass when a cell drifts far from it. 0 disables.
-	-- Keep this mild: the server's sibling push still prevents overlap
-	-- before recombination, while cohesion helps separated cells regroup.
-	-- Frozen cells remain untouched because movement is paused server-side.
+	-- Keep disabled so sibling cells do not actively bunch together
+	-- before their recombination timer expires.
 	-- Ratio raised from 1.15 to 1.6 so small cells can catch up to
 	-- the big cell instead of feeling "roped" behind it.
 	ClusterMaxSpeedRatio = 1.6,
-	CohesionStrength = 0.12,
+	CohesionStrength = 0,
 
 	-- Splits aim directly from each source cell at the cursor.
 	SplitGroupFanRadians = 0,
@@ -439,12 +438,13 @@ Config.Render = {
 	OwnCellPredictionMaxLeadSeconds = 0.22,
 	OwnCellPredictionLeadExtraSeconds = 0.025,
 	OwnCellPredictionLeadScale = 1,
-	-- The server is authoritative for sibling-cell separation. Running a
-	-- second client solver caused visible push/pull and rubber-banding.
-	OwnCellVisualSeparationSeconds = 0,
-	OwnCellVisualSeparationPasses = 1,
-	OwnCellVisualSeparationStrength = 0,
-	OwnCellVisualSeparationScale = 1,
+	-- Maintain visible sibling separation while the server's recombination
+	-- cooldown is active. This is visual-only; server physics remains
+	-- authoritative for actual positions and merge eligibility.
+	OwnCellVisualSeparationSeconds = 12,
+	OwnCellVisualSeparationPasses = 2,
+	OwnCellVisualSeparationStrength = 0.75,
+	OwnCellVisualSeparationScale = 1.02,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,
