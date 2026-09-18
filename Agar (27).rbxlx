@@ -1393,6 +1393,7 @@ local sharedModules = ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Sha
 local Camera2D = require(clientModules:WaitForChild("Camera2D"))
 local Config = require(sharedModules:WaitForChild("Config"))
 local InputController = require(clientModules:WaitForChild("InputController"))
+local MainMenu = require(clientModules:WaitForChild("MainMenu"))
 local Renderer = require(clientModules:WaitForChild("Renderer"))
 
 local player = Players.LocalPlayer
@@ -1408,10 +1409,19 @@ local clientReadyRemote = remotes:WaitForChild("ClientReady")
 local shopRemote = remotes:WaitForChild("ShopAction")
 local debugRemote = remotes:WaitForChild("DebugAction")
 local respawnRemote = remotes:WaitForChild("RespawnRequest")
+local socialAction = remotes:WaitForChild("SocialAction")
+local socialUpdate = remotes:WaitForChild("SocialUpdate")
 
 local camera = Camera2D.new()
 local renderer = Renderer.new(player:WaitForChild("PlayerGui"), camera, shopRemote, debugRemote)
 local input = InputController.new(inputRemote, camera, renderer)
+local mainMenu = MainMenu.new(player:WaitForChild("PlayerGui"), {
+	SocialAction = socialAction,
+	SocialUpdate = socialUpdate,
+}, renderer, input, camera)
+input.shouldIgnoreKeys = function()
+	return mainMenu:isCapturing()
+end
 
 local FORCED_ORIENTATION = (Config.UI and Config.UI.ForcedScreenOrientation) or Enum.ScreenOrientation.LandscapeRight
 local optionalRemoteConnections = {}
@@ -2800,6 +2810,15 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 		lastPinchScale = nil,
 		lastTouchLayoutEnabled = nil,
 		lastTouchLayoutViewport = nil,
+		keybinds = {
+			split = Enum.KeyCode.Space,
+			feed = Enum.KeyCode.W,
+			freeze = Enum.KeyCode.F,
+			doubleSplit = Enum.KeyCode.R,
+			tripleSplit = Enum.KeyCode.E,
+			menu = Enum.KeyCode.M,
+		},
+		shouldIgnoreKeys = nil,
 	}, InputController)
 
 	UserInputService.InputBegan:Connect(function(input, processed)
@@ -2808,24 +2827,33 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 			return
 		end
 
+		if self.shouldIgnoreKeys and self.shouldIgnoreKeys() then
+			return
+		end
+
 		if processed then
 			return
 		end
 
-		if input.KeyCode == Enum.KeyCode.Space then
+		local binds = self.keybinds or {}
+		if input.KeyCode == (binds.menu or Enum.KeyCode.M) then
+			return
+		end
+
+		if input.KeyCode == (binds.split or Enum.KeyCode.Space) then
 			self.splitToken += 1
-		elseif input.KeyCode == Enum.KeyCode.W then
+		elseif input.KeyCode == (binds.feed or Enum.KeyCode.W) then
 			self.ejectHeld = true
 			self.ejectAccumulator = 0
 			self.ejectToken += 1
 			self:_predictEject()
-		elseif input.KeyCode == Enum.KeyCode.R then
+		elseif input.KeyCode == (binds.doubleSplit or Enum.KeyCode.R) then
 			-- Three full Space-style generations; every eligible cell divides.
 			self.doubleSplitToken += 1
-		elseif input.KeyCode == Enum.KeyCode.E then
+		elseif input.KeyCode == (binds.tripleSplit or Enum.KeyCode.E) then
 			-- Two full Space-style generations; every eligible cell divides.
 			self.tripleSplitToken += 1
-		elseif input.KeyCode == Enum.KeyCode.F then
+		elseif input.KeyCode == (binds.freeze or Enum.KeyCode.F) then
 			-- Freeze toggle (Config.Freeze). Mirror the toggle locally so
 			-- the renderer immediately stops predicting movement toward
 			-- the cursor — otherwise cells visibly drift for one round
@@ -2844,7 +2872,7 @@ function InputController.new(remote: RemoteEvent, camera, renderer)
 	end)
 
 	UserInputService.InputEnded:Connect(function(input)
-		if input.KeyCode == Enum.KeyCode.W then
+		if input.KeyCode == ((self.keybinds and self.keybinds.feed) or Enum.KeyCode.W) then
 			self.ejectHeld = false
 			self.ejectAccumulator = 0
 		elseif input.UserInputType == Enum.UserInputType.Touch and self.moveTouchInput == input then
@@ -3162,6 +3190,22 @@ function InputController:step(dt: number)
 		fz = self.freezeToken,
 		cn = if self.cannibalHeld then 1 else 0,
 	})
+end
+
+function InputController:setKeybinds(binds)
+	self.keybinds = self.keybinds or {}
+	if typeof(binds) ~= "table" then
+		return
+	end
+	for id, code in binds do
+		if typeof(code) == "EnumItem" then
+			self.keybinds[id] = code
+		end
+	end
+	if UserInputService:IsKeyDown(self.keybinds.feed or Enum.KeyCode.W) == false then
+		self.ejectHeld = false
+		self.ejectAccumulator = 0
+	end
 end
 
 return InputController
@@ -3807,6 +3851,8 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 			self:setMenuOpen(isOpen)
 		end
 	end
+
+	self:_createSocialHud()
 
 	return self
 end
@@ -4763,7 +4809,7 @@ function Renderer:_ensureGridLines(viewport: Vector2, spacing: number?)
 	while #self.gridLines &lt; needed do
 		local line = Instance.new("Frame")
 		line.BorderSizePixel = 0
-		line.BackgroundColor3 = Config.Render.GridColor
+		line.BackgroundColor3 = self.mapGridColor or Config.Render.GridColor
 		line.BackgroundTransparency = 0.35
 		line.ZIndex = 1
 		line.Parent = self.grid
@@ -5763,6 +5809,8 @@ function Renderer:_updateHud(dt: number)
 			self.debugButton.Text = text
 		end
 	end
+	self:_refreshLeaderboard()
+	self:_refreshMinimap()
 end
 
 function Renderer:_startSplitFlex(state, direction: Vector2, now: number, parent: boolean)
@@ -6006,6 +6054,227 @@ function Renderer:render(dt: number?)
 	self.barrierPool:finish()
 	self.cellPool:finish()
 end
+
+function Renderer:_createSocialHud()
+	self.socialLeaders = {}
+	self.socialMapPlayers = {}
+	self.mapBackgroundColor = Config.Render.BackgroundColor
+	self.mapGridColor = Config.Render.GridColor
+	self.minimapMarkers = {}
+
+	local leaderboard = Instance.new("Frame")
+	leaderboard.Name = "Leaderboard"
+	leaderboard.AnchorPoint = Vector2.new(1, 0)
+	leaderboard.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	leaderboard.BackgroundTransparency = 0.42
+	leaderboard.BorderSizePixel = 0
+	leaderboard.Position = UDim2.new(1, -12, 0, 12)
+	leaderboard.Size = UDim2.fromOffset(210, 248)
+	leaderboard.ZIndex = 110
+	leaderboard.Parent = self.hud
+	local lbCorner = Instance.new("UICorner")
+	lbCorner.CornerRadius = UDim.new(0, 6)
+	lbCorner.Parent = leaderboard
+
+	local lbTitle = Instance.new("TextLabel")
+	lbTitle.Name = "Title"
+	lbTitle.BackgroundTransparency = 1
+	lbTitle.Font = Enum.Font.GothamBold
+	lbTitle.Position = UDim2.fromOffset(0, 4)
+	lbTitle.Size = UDim2.new(1, 0, 0, 22)
+	lbTitle.Text = "Leaderboard"
+	lbTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lbTitle.TextSize = 16
+	lbTitle.ZIndex = 111
+	lbTitle.Parent = leaderboard
+
+	local lbList = Instance.new("Frame")
+	lbList.Name = "List"
+	lbList.BackgroundTransparency = 1
+	lbList.Position = UDim2.fromOffset(8, 28)
+	lbList.Size = UDim2.new(1, -16, 1, -34)
+	lbList.ZIndex = 111
+	lbList.Parent = leaderboard
+	local lbLayout = Instance.new("UIListLayout")
+	lbLayout.Padding = UDim.new(0, 1)
+	lbLayout.Parent = lbList
+
+	self.leaderboard = leaderboard
+	self.leaderboardList = lbList
+	self.leaderboardRows = {}
+
+	local minimap = Instance.new("Frame")
+	minimap.Name = "Minimap"
+	minimap.AnchorPoint = Vector2.new(1, 1)
+	minimap.BackgroundColor3 = self.mapBackgroundColor
+	minimap.BackgroundTransparency = 0.12
+	minimap.BorderSizePixel = 0
+	minimap.Position = UDim2.new(1, -12, 1, -12)
+	minimap.Size = UDim2.fromOffset(188, 188)
+	minimap.ZIndex = 110
+	minimap.Parent = self.hud
+	local mapCorner = Instance.new("UICorner")
+	mapCorner.CornerRadius = UDim.new(0, 8)
+	mapCorner.Parent = minimap
+	local mapStroke = Instance.new("UIStroke")
+	mapStroke.Color = Color3.fromRGB(20, 24, 30)
+	mapStroke.Thickness = 2
+	mapStroke.Transparency = 0.25
+	mapStroke.Parent = minimap
+
+	local mapTitle = Instance.new("TextLabel")
+	mapTitle.BackgroundTransparency = 1
+	mapTitle.Font = Enum.Font.GothamBold
+	mapTitle.Position = UDim2.fromOffset(6, 4)
+	mapTitle.Size = UDim2.new(1, -12, 0, 16)
+	mapTitle.Text = "Map"
+	mapTitle.TextColor3 = Color3.fromRGB(40, 48, 56)
+	mapTitle.TextSize = 12
+	mapTitle.TextXAlignment = Enum.TextXAlignment.Left
+	mapTitle.ZIndex = 112
+	mapTitle.Parent = minimap
+
+	local mapCanvas = Instance.new("Frame")
+	mapCanvas.Name = "Canvas"
+	mapCanvas.BackgroundTransparency = 1
+	mapCanvas.ClipsDescendants = true
+	mapCanvas.Position = UDim2.fromOffset(8, 22)
+	mapCanvas.Size = UDim2.new(1, -16, 1, -30)
+	mapCanvas.ZIndex = 111
+	mapCanvas.Parent = minimap
+
+	self.minimap = minimap
+	self.minimapTitle = mapTitle
+	self.minimapCanvas = mapCanvas
+end
+
+function Renderer:setMapColors(bg: Color3, grid: Color3)
+	self.mapBackgroundColor = bg
+	self.mapGridColor = grid
+	self.root.BackgroundColor3 = bg
+	for _, line in self.gridLines do
+		line.BackgroundColor3 = grid
+	end
+	if self.minimap then
+		self.minimap.BackgroundColor3 = bg
+		local luma = bg.R * 0.25 + bg.G * 0.5 + bg.B * 0.25
+		self.minimapTitle.TextColor3 = if luma &lt; 0.45 then Color3.fromRGB(230, 236, 242) else Color3.fromRGB(40, 48, 56)
+	end
+end
+
+function Renderer:setSocialWorld(social)
+	self.socialLeaders = social and social.leaders or {}
+	self.socialMapPlayers = social and social.mapPlayers or {}
+	self:_refreshLeaderboard()
+	self:_refreshMinimap()
+end
+
+function Renderer:_refreshLeaderboard()
+	if not self.leaderboardList then
+		return
+	end
+	local leaders = self.socialLeaders or {}
+	local localId = Players.LocalPlayer.UserId
+	for i = 1, 10 do
+		local row = self.leaderboardRows[i]
+		if not row then
+			row = Instance.new("TextLabel")
+			row.BackgroundTransparency = 1
+			row.Font = Enum.Font.GothamBold
+			row.Size = UDim2.new(1, 0, 0, 20)
+			row.TextSize = 14
+			row.TextXAlignment = Enum.TextXAlignment.Left
+			row.TextTruncate = Enum.TextTruncate.AtEnd
+			row.ZIndex = 112
+			row.Parent = self.leaderboardList
+			self.leaderboardRows[i] = row
+		end
+		local entry = leaders[i]
+		if entry then
+			row.Visible = true
+			row.Text = string.format("%d. %s  %d", i, entry.n or "Player", entry.m or 0)
+			row.TextColor3 = if entry.u == localId then Color3.fromRGB(255, 224, 64) else Color3.fromRGB(245, 245, 245)
+		else
+			row.Visible = false
+		end
+	end
+end
+
+function Renderer:_worldMinMax()
+	local worldSize = self.worldSize or Config.World.Size
+	local maxScale = math.max(Config.DynamicWorld and Config.DynamicWorld.MaxScale or 1, 1)
+	local maxWorldSize = Config.World.Size * maxScale
+	local worldMin = (maxWorldSize - worldSize) * 0.5
+	return worldMin, worldMin + worldSize, worldSize
+end
+
+function Renderer:_refreshMinimap()
+	if not self.minimapCanvas then
+		return
+	end
+	local players = self.socialMapPlayers or {}
+	local worldMin, _, worldSize = self:_worldMinMax()
+	local canvas = self.minimapCanvas
+	local size = canvas.AbsoluteSize
+	if size.X &lt; 4 or size.Y &lt; 4 then
+		size = Vector2.new(172, 156)
+	end
+	local localId = Players.LocalPlayer.UserId
+	for i = 1, math.max(#players, #self.minimapMarkers) do
+		local marker = self.minimapMarkers[i]
+		if not marker then
+			marker = Instance.new("Frame")
+			marker.BackgroundTransparency = 1
+			marker.Size = UDim2.fromOffset(0, 0)
+			marker.ZIndex = 112
+			marker.Parent = canvas
+			local dot = Instance.new("Frame")
+			dot.Name = "Dot"
+			dot.AnchorPoint = Vector2.new(0.5, 0.5)
+			dot.BorderSizePixel = 0
+			dot.Size = UDim2.fromOffset(7, 7)
+			dot.ZIndex = 113
+			dot.Parent = marker
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(1, 0)
+			corner.Parent = dot
+			local name = Instance.new("TextLabel")
+			name.Name = "Tag"
+			name.BackgroundTransparency = 1
+			name.Font = Enum.Font.GothamBold
+			name.Position = UDim2.fromOffset(6, -7)
+			name.Size = UDim2.fromOffset(70, 14)
+			name.TextSize = 10
+			name.TextXAlignment = Enum.TextXAlignment.Left
+			name.TextTruncate = Enum.TextTruncate.AtEnd
+			name.ZIndex = 114
+			name.Parent = marker
+			self.minimapMarkers[i] = marker
+		end
+		local person = players[i]
+		if person then
+			local nx = math.clamp((person.x - worldMin.X) / math.max(worldSize.X, 1), 0, 1)
+			local ny = math.clamp((person.y - worldMin.Y) / math.max(worldSize.Y, 1), 0, 1)
+			marker.Visible = true
+			marker.Position = UDim2.fromOffset(math.floor(nx * size.X + 0.5), math.floor(ny * size.Y + 0.5))
+			local mine = person.u == localId
+			local dot = marker.Dot
+			dot.BackgroundColor3 = if mine then Color3.fromRGB(88, 214, 90) else Color3.fromRGB(70, 130, 220)
+			dot.Size = if mine then UDim2.fromOffset(9, 9) else UDim2.fromOffset(6, 6)
+			marker.Tag.Text = person.n or "Player"
+			marker.Tag.TextColor3 = if mine then Color3.fromRGB(32, 120, 48) else Color3.fromRGB(36, 44, 54)
+			if self.mapBackgroundColor then
+				local luma = self.mapBackgroundColor.R * 0.25 + self.mapBackgroundColor.G * 0.5 + self.mapBackgroundColor.B * 0.25
+				if luma &lt; 0.45 then
+					marker.Tag.TextColor3 = if mine then Color3.fromRGB(170, 255, 180) else Color3.fromRGB(220, 228, 236)
+				end
+			end
+		else
+			marker.Visible = false
+		end
+	end
+end
+
 
 return Renderer
 </ProtectedString>
@@ -6668,6 +6937,861 @@ return Localization
             <int64 name="SourceAssetId">-1</int64>
             <SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
             <UniqueId name="UniqueId">5f8302e43ab8db250a04607400000994</UniqueId>
+          </Properties>
+        </Item>
+        <Item class="ModuleScript" referent="RBX9B39E4CE08574F01B1AE8FE58CE06980">
+          <Properties>
+            <Content name="LinkedSource">
+              <null>
+              </null>
+            </Content>
+            <ProtectedString name="Source">local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local Config = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("Config"))
+
+local MainMenu = {}
+MainMenu.__index = MainMenu
+
+local ACCENT = Color3.fromRGB(88, 214, 90)
+local PANEL = Color3.fromRGB(18, 22, 28)
+local PANEL2 = Color3.fromRGB(28, 34, 42)
+local TEXT = Color3.fromRGB(240, 244, 248)
+local MUTED = Color3.fromRGB(160, 170, 182)
+local DANGER = Color3.fromRGB(232, 86, 86)
+
+local DEFAULT_BINDS = {
+	split = Enum.KeyCode.Space,
+	feed = Enum.KeyCode.W,
+	freeze = Enum.KeyCode.F,
+	doubleSplit = Enum.KeyCode.R,
+	tripleSplit = Enum.KeyCode.E,
+	menu = Enum.KeyCode.M,
+}
+
+local BIND_ORDER = {
+	{ id = "menu", label = "Main Menu" },
+	{ id = "split", label = "Split" },
+	{ id = "feed", label = "Feed" },
+	{ id = "freeze", label = "Freeze" },
+	{ id = "doubleSplit", label = "Quad Split" },
+	{ id = "tripleSplit", label = "Triple Split" },
+}
+
+local MAP_PRESETS = {
+	{ name = "Classic", bg = Color3.fromRGB(247, 247, 247), grid = Color3.fromRGB(218, 225, 235) },
+	{ name = "Night", bg = Color3.fromRGB(18, 22, 28), grid = Color3.fromRGB(42, 50, 62) },
+	{ name = "Ocean", bg = Color3.fromRGB(186, 224, 240), grid = Color3.fromRGB(140, 190, 214) },
+	{ name = "Sand", bg = Color3.fromRGB(236, 220, 186), grid = Color3.fromRGB(210, 188, 148) },
+	{ name = "Forest", bg = Color3.fromRGB(210, 228, 196), grid = Color3.fromRGB(168, 196, 150) },
+	{ name = "Void", bg = Color3.fromRGB(8, 8, 12), grid = Color3.fromRGB(36, 36, 48) },
+}
+
+local function corner(parent, radius)
+	local c = Instance.new("UICorner")
+	c.CornerRadius = UDim.new(0, radius or 8)
+	c.Parent = parent
+	return c
+end
+
+local function label(parent, text, size, color, bold)
+	local l = Instance.new("TextLabel")
+	l.BackgroundTransparency = 1
+	l.Font = if bold then Enum.Font.GothamBold else Enum.Font.GothamMedium
+	l.Text = text
+	l.TextColor3 = color or TEXT
+	l.TextSize = size or 16
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.Parent = parent
+	return l
+end
+
+local function button(parent, text, color)
+	local b = Instance.new("TextButton")
+	b.AutoButtonColor = true
+	b.BackgroundColor3 = color or ACCENT
+	b.BorderSizePixel = 0
+	b.Font = Enum.Font.GothamBold
+	b.Text = text
+	b.TextColor3 = Color3.fromRGB(16, 20, 24)
+	b.TextSize = 15
+	b.Parent = parent
+	corner(b, 8)
+	return b
+end
+
+local function keyName(code)
+	if typeof(code) ~= "EnumItem" then
+		return "?"
+	end
+	if code == Enum.KeyCode.Space then
+		return "Space"
+	end
+	return code.Name
+end
+
+local function parseKey(name)
+	if typeof(name) ~= "string" or name == "" then
+		return nil
+	end
+	local ok, value = pcall(function()
+		return Enum.KeyCode[name]
+	end)
+	if ok and typeof(value) == "EnumItem" then
+		return value
+	end
+	return nil
+end
+
+function MainMenu.new(playerGui, remotes, renderer, input, camera)
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "AgarMainMenu"
+	gui.IgnoreGuiInset = true
+	gui.ResetOnSpawn = false
+	gui.DisplayOrder = 80
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = playerGui
+
+	local dim = Instance.new("Frame")
+	dim.Name = "Dim"
+	dim.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+	dim.BackgroundTransparency = 0.35
+	dim.BorderSizePixel = 0
+	dim.Size = UDim2.fromScale(1, 1)
+	dim.ZIndex = 1
+	dim.Parent = gui
+
+	local panel = Instance.new("Frame")
+	panel.Name = "Panel"
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+	panel.BackgroundColor3 = PANEL
+	panel.BorderSizePixel = 0
+	panel.Position = UDim2.fromScale(0.5, 0.5)
+	panel.Size = UDim2.fromOffset(760, 520)
+	panel.ZIndex = 2
+	panel.Parent = gui
+	corner(panel, 16)
+
+	local title = label(panel, "AGHAAR", 28, ACCENT, true)
+	title.Position = UDim2.fromOffset(24, 16)
+	title.Size = UDim2.fromOffset(240, 34)
+
+	local subtitle = label(panel, "Press M to open or close anytime", 13, MUTED, false)
+	subtitle.Position = UDim2.fromOffset(24, 50)
+	subtitle.Size = UDim2.fromOffset(400, 18)
+
+	local tabs = Instance.new("Frame")
+	tabs.BackgroundTransparency = 1
+	tabs.Position = UDim2.fromOffset(24, 78)
+	tabs.Size = UDim2.new(1, -48, 0, 34)
+	tabs.ZIndex = 3
+	tabs.Parent = panel
+
+	local pages = Instance.new("Frame")
+	pages.BackgroundTransparency = 1
+	pages.Position = UDim2.fromOffset(24, 122)
+	pages.Size = UDim2.new(1, -48, 1, -146)
+	pages.ZIndex = 3
+	pages.Parent = panel
+
+	local self = setmetatable({
+		gui = gui,
+		dim = dim,
+		panel = panel,
+		pages = pages,
+		tabButtons = {},
+		pageFrames = {},
+		open = true,
+		tab = "play",
+		renderer = renderer,
+		input = input,
+		camera = camera,
+		remote = remotes.SocialAction,
+		updateRemote = remotes.SocialUpdate,
+		player = Players.LocalPlayer,
+		social = {
+			playing = false,
+			spectateUnlockIn = 0,
+			spawnNearEnabled = true,
+			friends = {},
+			incoming = {},
+			outgoing = {},
+			serverPlayers = {},
+			party = nil,
+			leaders = {},
+			mapPlayers = {},
+		},
+		keybinds = table.clone(DEFAULT_BINDS),
+		capturingBind = nil,
+		spawnMode = "open",
+		spawnUserId = nil,
+		spectateUnlockAt = 0,
+		mapColor = MAP_PRESETS[1].bg,
+		gridColor = MAP_PRESETS[1].grid,
+		statusLabel = nil,
+		lockLabel = nil,
+		codeBox = nil,
+		joinBox = nil,
+		lists = {},
+	}, MainMenu)
+
+	self:_buildTabs(tabs)
+	self:_buildPlayPage()
+	self:_buildFriendsPage()
+	self:_buildPartyPage()
+	self:_buildSettingsPage()
+	self:_showTab("play")
+	self:_bindInput()
+
+	if self.updateRemote then
+		self.updateRemote.OnClientEvent:Connect(function(payload)
+			self:handleUpdate(payload)
+		end)
+	end
+
+	self:setOpen(true)
+	RunService.Heartbeat:Connect(function()
+		if self.social.playing and (self.spectateUnlockAt or 0) &gt; os.clock() then
+			self:_refreshLockLabel()
+		end
+	end)
+	return self
+end
+
+function MainMenu:_buildTabs(parent)
+	local order = { { "Play", "play" }, { "Friends", "friends" }, { "Party", "party" }, { "Settings", "settings" } }
+	for index, entry in order do
+		local b = Instance.new("TextButton")
+		b.AutoButtonColor = true
+		b.BackgroundColor3 = PANEL2
+		b.BorderSizePixel = 0
+		b.Font = Enum.Font.GothamBold
+		b.Position = UDim2.fromOffset((index - 1) * 126, 0)
+		b.Size = UDim2.fromOffset(118, 34)
+		b.Text = entry[1]
+		b.TextColor3 = TEXT
+		b.TextSize = 14
+		b.ZIndex = 4
+		b.Parent = parent
+		corner(b, 8)
+		b.MouseButton1Click:Connect(function()
+			self:_showTab(entry[2])
+		end)
+		self.tabButtons[entry[2]] = b
+	end
+end
+
+function MainMenu:_page(name)
+	local page = Instance.new("Frame")
+	page.Name = name
+	page.BackgroundTransparency = 1
+	page.Size = UDim2.fromScale(1, 1)
+	page.Visible = false
+	page.ZIndex = 3
+	page.Parent = self.pages
+	self.pageFrames[name] = page
+	return page
+end
+
+function MainMenu:_showTab(name)
+	self.tab = name
+	for id, page in self.pageFrames do
+		page.Visible = id == name
+	end
+	for id, b in self.tabButtons do
+		b.BackgroundColor3 = if id == name then ACCENT else PANEL2
+		b.TextColor3 = if id == name then Color3.fromRGB(16, 20, 24) else TEXT
+	end
+	self:_refreshAll()
+end
+
+function MainMenu:_buildPlayPage()
+	local page = self:_page("play")
+	local hint = label(page, "Play puts you in the map. Opening this menu does not save you — you can still be eaten.", 14, MUTED, false)
+	hint.Size = UDim2.new(1, 0, 0, 36)
+	hint.TextWrapped = true
+
+	local play = button(page, "Play", ACCENT)
+	play.Position = UDim2.fromOffset(0, 52)
+	play.Size = UDim2.fromOffset(180, 44)
+	play.MouseButton1Click:Connect(function()
+		self:_play()
+	end)
+
+	local spectate = button(page, "Spectate", Color3.fromRGB(200, 206, 214))
+	spectate.Position = UDim2.fromOffset(196, 52)
+	spectate.Size = UDim2.fromOffset(160, 44)
+	spectate.MouseButton1Click:Connect(function()
+		self:_fire({ action = "spectate" })
+	end)
+	self.spectateButton = spectate
+
+	self.lockLabel = label(page, "", 14, DANGER, false)
+	self.lockLabel.Position = UDim2.fromOffset(372, 60)
+	self.lockLabel.Size = UDim2.fromOffset(300, 28)
+
+	local spawnTitle = label(page, "Spawn near", 16, TEXT, true)
+	spawnTitle.Position = UDim2.fromOffset(0, 116)
+	spawnTitle.Size = UDim2.fromOffset(200, 22)
+
+	self.spawnNearToggle = button(page, "Spawn near: ON", ACCENT)
+	self.spawnNearToggle.Position = UDim2.fromOffset(0, 146)
+	self.spawnNearToggle.Size = UDim2.fromOffset(180, 36)
+	self.spawnNearToggle.MouseButton1Click:Connect(function()
+		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
+		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
+		self:_refreshPlay()
+	end)
+
+	self.spawnTargetList = Instance.new("ScrollingFrame")
+	self.spawnTargetList.BackgroundColor3 = PANEL2
+	self.spawnTargetList.BorderSizePixel = 0
+	self.spawnTargetList.Position = UDim2.fromOffset(0, 196)
+	self.spawnTargetList.Size = UDim2.new(1, 0, 1, -206)
+	self.spawnTargetList.ScrollBarThickness = 6
+	self.spawnTargetList.CanvasSize = UDim2.fromOffset(0, 0)
+	self.spawnTargetList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	self.spawnTargetList.Parent = page
+	corner(self.spawnTargetList, 8)
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 6)
+	layout.Parent = self.spawnTargetList
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 8)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = self.spawnTargetList
+
+	self.statusLabel = label(page, "", 14, MUTED, false)
+	self.statusLabel.Position = UDim2.fromOffset(196, 146)
+	self.statusLabel.Size = UDim2.new(1, -196, 0, 36)
+	self.statusLabel.TextWrapped = true
+end
+
+function MainMenu:_buildFriendsPage()
+	local page = self:_page("friends")
+	local cols = Instance.new("Frame")
+	cols.BackgroundTransparency = 1
+	cols.Size = UDim2.fromScale(1, 1)
+	cols.Parent = page
+
+	self.lists.server = self:_makeList(cols, "In this server", UDim2.new(0.33, -8, 1, 0), UDim2.fromScale(0, 0))
+	self.lists.incoming = self:_makeList(cols, "Requests", UDim2.new(0.33, -8, 1, 0), UDim2.new(0.335, 0, 0, 0))
+	self.lists.friends = self:_makeList(cols, "Friends", UDim2.new(0.33, -8, 1, 0), UDim2.new(0.67, 0, 0, 0))
+end
+
+function MainMenu:_buildPartyPage()
+	local page = self:_page("party")
+	local create = button(page, "Create party", ACCENT)
+	create.Size = UDim2.fromOffset(150, 36)
+	create.MouseButton1Click:Connect(function()
+		self:_fire({ action = "partyCreate" })
+	end)
+
+	local leave = button(page, "Leave party", DANGER)
+	leave.Position = UDim2.fromOffset(162, 0)
+	leave.Size = UDim2.fromOffset(140, 36)
+	leave.TextColor3 = TEXT
+	leave.MouseButton1Click:Connect(function()
+		self:_fire({ action = "partyLeave" })
+	end)
+
+	self.codeBox = Instance.new("TextBox")
+	self.codeBox.BackgroundColor3 = PANEL2
+	self.codeBox.BorderSizePixel = 0
+	self.codeBox.Font = Enum.Font.GothamBold
+	self.codeBox.PlaceholderText = "Party code"
+	self.codeBox.Position = UDim2.fromOffset(0, 48)
+	self.codeBox.Size = UDim2.fromOffset(160, 36)
+	self.codeBox.Text = ""
+	self.codeBox.TextColor3 = TEXT
+	self.codeBox.TextSize = 16
+	self.codeBox.ClearTextOnFocus = false
+	self.codeBox.Parent = page
+	corner(self.codeBox, 8)
+
+	local join = button(page, "Join code", Color3.fromRGB(200, 206, 214))
+	join.Position = UDim2.fromOffset(172, 48)
+	join.Size = UDim2.fromOffset(120, 36)
+	join.MouseButton1Click:Connect(function()
+		self:_fire({ action = "partyJoin", code = self.codeBox.Text })
+	end)
+
+	self.partyInfo = label(page, "Not in a party.", 15, MUTED, false)
+	self.partyInfo.Position = UDim2.fromOffset(0, 96)
+	self.partyInfo.Size = UDim2.new(1, 0, 0, 24)
+
+	self.lists.party = self:_makeList(page, "Members", UDim2.new(1, 0, 1, -132), UDim2.fromOffset(0, 128))
+end
+
+function MainMenu:_buildSettingsPage()
+	local page = self:_page("settings")
+	local left = Instance.new("ScrollingFrame")
+	left.BackgroundTransparency = 1
+	left.Size = UDim2.new(0.48, 0, 1, 0)
+	left.ScrollBarThickness = 6
+	left.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	left.CanvasSize = UDim2.fromOffset(0, 0)
+	left.Parent = page
+	local leftLayout = Instance.new("UIListLayout")
+	leftLayout.Padding = UDim.new(0, 8)
+	leftLayout.Parent = left
+
+	label(left, "Map colour", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+	for _, preset in MAP_PRESETS do
+		local b = button(left, preset.name, preset.bg)
+		b.Size = UDim2.new(1, 0, 0, 32)
+		b.TextColor3 = if preset.name == "Night" or preset.name == "Void" then TEXT else Color3.fromRGB(20, 24, 28)
+		b.MouseButton1Click:Connect(function()
+			self:_applyMapColor(preset.bg, preset.grid, true)
+		end)
+	end
+
+	local right = Instance.new("ScrollingFrame")
+	right.BackgroundTransparency = 1
+	right.Position = UDim2.new(0.52, 0, 0, 0)
+	right.Size = UDim2.new(0.48, 0, 1, 0)
+	right.ScrollBarThickness = 6
+	right.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	right.CanvasSize = UDim2.fromOffset(0, 0)
+	right.Parent = page
+	local rightLayout = Instance.new("UIListLayout")
+	rightLayout.Padding = UDim.new(0, 8)
+	rightLayout.Parent = right
+
+	label(right, "Keybinds", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+	self.bindButtons = {}
+	for _, entry in BIND_ORDER do
+		local row = Instance.new("Frame")
+		row.BackgroundTransparency = 1
+		row.Size = UDim2.new(1, 0, 0, 36)
+		row.Parent = right
+		local name = label(row, entry.label, 14, TEXT, false)
+		name.Size = UDim2.new(0.5, 0, 1, 0)
+		local b = button(row, keyName(self.keybinds[entry.id]), Color3.fromRGB(200, 206, 214))
+		b.Position = UDim2.new(0.5, 0, 0, 0)
+		b.Size = UDim2.new(0.5, 0, 1, 0)
+		b.MouseButton1Click:Connect(function()
+			self.capturingBind = entry.id
+			b.Text = "Press a key..."
+		end)
+		self.bindButtons[entry.id] = b
+	end
+
+	self.settingsSpawnToggle = button(right, "Spawn near: ON", ACCENT)
+	self.settingsSpawnToggle.Size = UDim2.new(1, 0, 0, 36)
+	self.settingsSpawnToggle.MouseButton1Click:Connect(function()
+		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
+		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
+		self:_refreshPlay()
+	end)
+end
+
+function MainMenu:_makeList(parent, title, size, pos)
+	local frame = Instance.new("Frame")
+	frame.BackgroundColor3 = PANEL2
+	frame.BorderSizePixel = 0
+	frame.Position = pos
+	frame.Size = size
+	frame.Parent = parent
+	corner(frame, 8)
+	local t = label(frame, title, 14, MUTED, true)
+	t.Position = UDim2.fromOffset(10, 6)
+	t.Size = UDim2.new(1, -16, 0, 20)
+	local scroll = Instance.new("ScrollingFrame")
+	scroll.BackgroundTransparency = 1
+	scroll.Position = UDim2.fromOffset(0, 28)
+	scroll.Size = UDim2.new(1, 0, 1, -28)
+	scroll.ScrollBarThickness = 5
+	scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	scroll.CanvasSize = UDim2.fromOffset(0, 0)
+	scroll.Parent = frame
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 4)
+	layout.Parent = scroll
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = scroll
+	return scroll
+end
+
+function MainMenu:_clear(scroll)
+	for _, child in scroll:GetChildren() do
+		if child:IsA("TextButton") or child:IsA("Frame") then
+			child:Destroy()
+		end
+	end
+end
+
+function MainMenu:_row(parent, text, actions)
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1, 0, 0, 32)
+	row.Parent = parent
+	local l = label(row, text, 13, TEXT, false)
+	l.Size = UDim2.new(1, -120, 1, 0)
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	local x = 1
+	for i = #actions, 1, -1 do
+		local action = actions[i]
+		local b = button(row, action[1], action[3] or ACCENT)
+		b.AnchorPoint = Vector2.new(1, 0.5)
+		b.Position = UDim2.new(1, -(i - 1) * 58, 0.5, 0)
+		b.Size = UDim2.fromOffset(54, 24)
+		b.TextSize = 11
+		if action[3] == DANGER then
+			b.TextColor3 = TEXT
+		end
+		b.MouseButton1Click:Connect(action[2])
+	end
+	return row
+end
+
+function MainMenu:_fire(payload)
+	if self.remote then
+		self.remote:FireServer(payload)
+	end
+end
+
+function MainMenu:_play()
+	if self.social.playing then
+		self:setOpen(false)
+		return
+	end
+	self:_fire({
+		action = "play",
+		spawnNear = self.social.spawnNearEnabled == true,
+		spawnMode = self.spawnMode,
+		spawnUserId = self.spawnUserId,
+	})
+end
+
+function MainMenu:_bindInput()
+	UserInputService.InputBegan:Connect(function(input, processed)
+		if self.capturingBind and input.KeyCode ~= Enum.KeyCode.Unknown then
+			local used = false
+			for id, code in self.keybinds do
+				if id ~= self.capturingBind and code == input.KeyCode then
+					used = true
+					break
+				end
+			end
+			if not used then
+				self.keybinds[self.capturingBind] = input.KeyCode
+				if self.input and self.input.setKeybinds then
+					self.input:setKeybinds(self.keybinds)
+				end
+				self:_fire({
+					action = "settings",
+					keybinds = self:_keybindPayload(),
+				})
+			end
+			self.capturingBind = nil
+			self:_refreshSettings()
+			return
+		end
+		if processed then
+			return
+		end
+		if input.KeyCode == (self.keybinds.menu or Enum.KeyCode.M) then
+			self:setOpen(not self.open)
+		end
+	end)
+end
+
+function MainMenu:_keybindPayload()
+	local payload = {}
+	for id, code in self.keybinds do
+		payload[id] = code.Name
+	end
+	return payload
+end
+
+function MainMenu:_applyMapColor(bg, grid, save)
+	self.mapColor = bg
+	self.gridColor = grid
+	if self.renderer and self.renderer.setMapColors then
+		self.renderer:setMapColors(bg, grid)
+	end
+	if save then
+		self:_fire({
+			action = "settings",
+			mapColor = { bg.R, bg.G, bg.B },
+			gridColor = { grid.R, grid.G, grid.B },
+		})
+	end
+end
+
+function MainMenu:setOpen(open)
+	self.open = open == true
+	self.gui.Enabled = true
+	self.dim.Visible = self.open
+	self.panel.Visible = self.open
+	if self.renderer then
+		self.renderer.mainMenuOpen = self.open
+	end
+end
+
+function MainMenu:isCapturing()
+	return self.capturingBind ~= nil
+end
+
+function MainMenu:handleUpdate(payload)
+	if typeof(payload) ~= "table" then
+		return
+	end
+	if payload.kind == "hello" or payload.kind == "social" or payload.kind == "world" then
+		if typeof(payload.playing) == "boolean" then
+			self.social.playing = payload.playing
+		end
+		if typeof(payload.spectateUnlockIn) == "number" then
+			self.social.spectateUnlockIn = payload.spectateUnlockIn
+			self.spectateUnlockAt = os.clock() + payload.spectateUnlockIn
+		end
+		if typeof(payload.spawnNearEnabled) == "boolean" then
+			self.social.spawnNearEnabled = payload.spawnNearEnabled
+		end
+		if typeof(payload.friends) == "table" then
+			self.social.friends = payload.friends
+		end
+		if typeof(payload.incoming) == "table" then
+			self.social.incoming = payload.incoming
+		end
+		if typeof(payload.outgoing) == "table" then
+			self.social.outgoing = payload.outgoing
+		end
+		if typeof(payload.serverPlayers) == "table" then
+			self.social.serverPlayers = payload.serverPlayers
+		end
+		if payload.party == false then
+			self.social.party = nil
+		elseif typeof(payload.party) == "table" then
+			self.social.party = payload.party
+		end
+		if typeof(payload.leaders) == "table" then
+			self.social.leaders = payload.leaders
+		end
+		if typeof(payload.mapPlayers) == "table" then
+			self.social.mapPlayers = payload.mapPlayers
+		end
+		if typeof(payload.message) == "string" then
+			self.statusLabel.Text = payload.message
+		end
+		if typeof(payload.keybinds) == "table" then
+			for id, name in payload.keybinds do
+				local code = parseKey(name)
+				if code then
+					self.keybinds[id] = code
+				end
+			end
+			if self.input and self.input.setKeybinds then
+				self.input:setKeybinds(self.keybinds)
+			end
+		end
+		if typeof(payload.mapColor) == "table" and typeof(payload.gridColor) == "table" then
+			local bg = Color3.new(payload.mapColor[1] or 1, payload.mapColor[2] or 1, payload.mapColor[3] or 1)
+			local grid = Color3.new(payload.gridColor[1] or 0.85, payload.gridColor[2] or 0.88, payload.gridColor[3] or 0.92)
+			self:_applyMapColor(bg, grid, false)
+		end
+		if self.renderer and self.renderer.setSocialWorld then
+			self.renderer:setSocialWorld(self.social)
+		end
+		if payload.kind == "hello" then
+			self:setOpen(payload.playing ~= true)
+		end
+		self:_refreshAll()
+	end
+end
+
+function MainMenu:_refreshAll()
+	self:_refreshPlay()
+	self:_refreshFriends()
+	self:_refreshParty()
+	self:_refreshSettings()
+end
+
+function MainMenu:_refreshLockLabel()
+	if not self.lockLabel then
+		return
+	end
+	local lock = math.max((self.spectateUnlockAt or 0) - os.clock(), 0)
+	self.social.spectateUnlockIn = lock
+	if self.social.playing and lock &gt; 0 then
+		self.lockLabel.Text = string.format("Spectate locked %.0fs", lock)
+		self.spectateButton.Active = false
+		self.spectateButton.AutoButtonColor = false
+	else
+		self.lockLabel.Text = if self.social.playing then "Spectate leaves the map and drops your mass." else "Spectating"
+		self.spectateButton.Active = true
+		self.spectateButton.AutoButtonColor = true
+	end
+end
+
+function MainMenu:_refreshPlay()
+	if not self.spawnNearToggle then
+		return
+	end
+	local on = self.social.spawnNearEnabled == true
+	self.spawnNearToggle.Text = if on then "Spawn near: ON" else "Spawn near: OFF"
+	self.spawnNearToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
+	if self.settingsSpawnToggle then
+		self.settingsSpawnToggle.Text = if on then "Spawn near: ON" else "Spawn near: OFF"
+		self.settingsSpawnToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
+	end
+	self:_refreshLockLabel()
+
+	self:_clear(self.spawnTargetList)
+	local function addTarget(text, mode, userId, selected)
+		local b = button(self.spawnTargetList, text, if selected then ACCENT else Color3.fromRGB(200, 206, 214))
+		b.Size = UDim2.new(1, 0, 0, 30)
+		b.TextSize = 13
+		if not selected then
+			b.TextColor3 = Color3.fromRGB(20, 24, 28)
+		end
+		b.MouseButton1Click:Connect(function()
+			self.spawnMode = mode
+			self.spawnUserId = userId
+			self:_refreshPlay()
+		end)
+	end
+	addTarget("Open space", "open", nil, self.spawnMode == "open")
+	if self.social.party then
+		addTarget("Anyone in my party", "party", nil, self.spawnMode == "party" and not self.spawnUserId)
+		for _, member in self.social.party.members or {} do
+			if member.u ~= self.player.UserId then
+				addTarget("Party: " .. (member.n or "Player"), "user", member.u, self.spawnMode == "user" and self.spawnUserId == member.u)
+			end
+		end
+	end
+	local listed = {}
+	if self.social.party then
+		for _, member in self.social.party.members or {} do
+			listed[member.u] = true
+		end
+	end
+	for _, friend in self.social.friends or {} do
+		if not listed[friend.u] then
+			addTarget("Friend: " .. (friend.n or "Player"), "user", friend.u, self.spawnMode == "user" and self.spawnUserId == friend.u)
+		end
+	end
+end
+
+function MainMenu:_refreshFriends()
+	if not self.lists.server then
+		return
+	end
+	self:_clear(self.lists.server)
+	self:_clear(self.lists.incoming)
+	self:_clear(self.lists.friends)
+	local me = self.player.UserId
+	local friendSet = {}
+	for _, friend in self.social.friends or {} do
+		friendSet[friend.u] = true
+	end
+	for _, person in self.social.serverPlayers or {} do
+		if person.u ~= me then
+			local actions = {}
+			if friendSet[person.u] then
+				actions[#actions + 1] = { "Invite", function()
+					self:_fire({ action = "partyInvite", userId = person.u })
+				end }
+			else
+				actions[#actions + 1] = { "Add", function()
+					self:_fire({ action = "friendAdd", userId = person.u })
+				end, ACCENT }
+			end
+			self:_row(self.lists.server, person.n or "Player", actions)
+		end
+	end
+	for _, req in self.social.incoming or {} do
+		self:_row(self.lists.incoming, (req.n or "Player") .. (req.kind == "party" and " (party)" or ""), {
+			{ "Yes", function()
+				self:_fire({ action = if req.kind == "party" then "partyAccept" else "friendAccept", userId = req.u })
+			end },
+			{ "No", function()
+				self:_fire({ action = if req.kind == "party" then "partyDecline" else "friendDecline", userId = req.u })
+			end, DANGER },
+		})
+	end
+	for _, req in self.social.outgoing or {} do
+		self:_row(self.lists.incoming, (req.n or "Player") .. " (sent)", {})
+	end
+	for _, friend in self.social.friends or {} do
+		local tag = friend.n or "Player"
+		if friend.online == false then
+			tag ..= "  (offline)"
+		elseif friend.playing then
+			tag ..= "  (in map)"
+		end
+		self:_row(self.lists.friends, tag, {
+			{ "Invite", function()
+				self:_fire({ action = "partyInvite", userId = friend.u })
+			end },
+			{ "Unadd", function()
+				self:_fire({ action = "friendRemove", userId = friend.u })
+			end, DANGER },
+		})
+	end
+end
+
+function MainMenu:_refreshParty()
+	if not self.lists.party then
+		return
+	end
+	self:_clear(self.lists.party)
+	local party = self.social.party
+	if not party then
+		self.partyInfo.Text = "Not in a party. Create one or join with a code."
+		return
+	end
+	self.partyInfo.Text = "Code " .. tostring(party.code or "") .. "  ·  share this or invite friends"
+	if self.codeBox and (self.codeBox.Text == "" or self.codeBox.Text == (party.code or "")) then
+		self.codeBox.Text = party.code or ""
+	end
+	local meLeader = party.leader == self.player.UserId
+	for _, member in party.members or {} do
+		local actions = {}
+		if meLeader and member.u ~= self.player.UserId then
+			actions[#actions + 1] = { "Kick", function()
+				self:_fire({ action = "partyKick", userId = member.u })
+			end, DANGER }
+		end
+		local tag = member.n or "Player"
+		if member.u == party.leader then
+			tag ..= "  (leader)"
+		end
+		self:_row(self.lists.party, tag, actions)
+	end
+end
+
+function MainMenu:_refreshSettings()
+	if not self.bindButtons then
+		return
+	end
+	for id, b in self.bindButtons do
+		if self.capturingBind == id then
+			b.Text = "Press a key..."
+		else
+			b.Text = keyName(self.keybinds[id])
+		end
+	end
+end
+
+return MainMenu
+</ProtectedString>
+            <string name="ScriptGuid">{76d0d131-7427-4b90-b3bf-c53f24de80b9}</string>
+            <BinaryString name="AttributesSerialize">
+            </BinaryString>
+            <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+            <bool name="DefinesCapabilities">false</bool>
+            <UniqueId name="HistoryId">00000000000000000000000000000000</UniqueId>
+            <string name="Name">MainMenu</string>
+            <int64 name="SourceAssetId">-1</int64>
+            <SharedString name="Tags">yuZpQdnvvUBOTYh1jqZ2cA==</SharedString>
+            <UniqueId name="UniqueId">2cb3efd1ad43436eb9e94e784b38d105</UniqueId>
           </Properties>
         </Item>
       </Item>
@@ -7885,6 +9009,20 @@ Config.Render = {
 	EjectedColor = Color3.fromRGB(245, 230, 115),
 	BackgroundColor = Color3.fromRGB(247, 247, 247),
 	GridColor = Color3.fromRGB(218, 225, 235),
+}
+
+Config.Social = {
+	SpectateLockSeconds = 10,
+	PartyMaxMembers = 8,
+	MaxFriends = 100,
+	SpawnNearRadius = 280,
+	SpawnNearAttempts = 16,
+	SpawnFallbackAttempts = 24,
+	WorldRefreshSeconds = 0.5,
+}
+
+Config.Leaderboard = {
+	MaxEntries = 10,
 }
 
 -- ==================================================================
@@ -9514,6 +10652,27 @@ local function normaliseNickname(value): string
 	return truncateNickname(value)
 end
 
+local function normaliseFriends(value)
+	local friends = {}
+	if type(value) ~= "table" then
+		return friends
+	end
+	for _, entry in value do
+		if type(entry) == "table" then
+			local id = tonumber(entry.u)
+			if id then
+				friends[id] = if typeof(entry.n) == "string" and entry.n ~= "" then entry.n else true
+			end
+		else
+			local id = tonumber(entry)
+			if id then
+				friends[id] = true
+			end
+		end
+	end
+	return friends
+end
+
 function GameService.new()
 	local self = setmetatable({}, GameService)
 	self.remotes = self:_ensureRemotes()
@@ -9568,6 +10727,8 @@ function GameService.new()
 	self.ejectedCollisionPairsScratch = {}
 	self.rng = Random.new()
 	self.running = false
+	self.parties = {}
+	self.socialAccumulator = 0
 	return self
 end
 
@@ -9664,6 +10825,20 @@ function GameService:_ensureRemotes()
 		configUpdate.Parent = folder
 	end
 
+	local socialAction = folder:FindFirstChild("SocialAction")
+	if not socialAction then
+		socialAction = Instance.new("RemoteEvent")
+		socialAction.Name = "SocialAction"
+		socialAction.Parent = folder
+	end
+
+	local socialUpdate = folder:FindFirstChild("SocialUpdate")
+	if not socialUpdate then
+		socialUpdate = Instance.new("RemoteEvent")
+		socialUpdate.Name = "SocialUpdate"
+		socialUpdate.Parent = folder
+	end
+
 	return {
 		Folder = folder,
 		Input = input,
@@ -9676,6 +10851,8 @@ function GameService:_ensureRemotes()
 		DebugAction = debugAction,
 		RespawnRequest = respawnRequest,
 		ConfigUpdate = configUpdate,
+		SocialAction = socialAction,
+		SocialUpdate = socialUpdate,
 	}
 end
 
@@ -9928,12 +11105,19 @@ function GameService:start()
 		self:_handleRespawnRequest(player)
 	end)
 
+	if self.remotes.SocialAction then
+		self.remotes.SocialAction.OnServerEvent:Connect(function(player, payload)
+			self:_handleSocialAction(player, payload)
+		end)
+	end
+
 	self.remotes.ClientReady.OnServerEvent:Connect(function(player)
 		local state = self.playersByUserId[player.UserId]
 		if state then
 			state.clientReady = true
 			state.needsStaticSnapshot = true
 			state.shopDirty = true
+			self:_sendSocial(state, { kind = "hello" })
 		end
 		if self:_isAdminPlayer(player) and self.remotes.ConfigUpdate then
 			self.remotes.ConfigUpdate:FireClient(player, {
@@ -9990,6 +11174,7 @@ function GameService:_runLoop()
 	local accumulator = 0
 	local netAccumulator = 0
 	local staticAccumulator = 0
+	local socialAccumulator = 0
 
 	while self.running do
 		local dt = RunService.Heartbeat:Wait()
@@ -10020,6 +11205,13 @@ function GameService:_runLoop()
 			if includeStatics then
 				staticAccumulator = 0
 			end
+		end
+
+		socialAccumulator += dt
+		local socialDt = math.max(Config.Social and Config.Social.WorldRefreshSeconds or 0.5, 0.2)
+		if socialAccumulator &gt;= socialDt then
+			socialAccumulator = 0
+			self:_broadcastSocial()
 		end
 	end
 end
@@ -10090,13 +11282,26 @@ function GameService:_addPlayer(player: Player)
 		lastStaticSnapshotCenter = nil,
 		lastStaticSnapshotRadius = nil,
 		lastStaticSnapshotAt = 0,
+		playing = false,
+		friends = {},
+		incomingRequests = {},
+		outgoingRequests = {},
+		spawnNearEnabled = true,
+		partyId = nil,
+		pendingPartyId = nil,
+		spectateUnlockAt = 0,
+		socialRate = {},
+		keybinds = nil,
+		mapColor = nil,
+		gridColor = nil,
+		socialMessage = nil,
 	}
 
 	self.playersByUserId[player.UserId] = state
 	self.playerCount += 1
 	self:_loadPlayerInfo(state)
 	self:_publishPlayerInfoAttributes(state)
-	self:_respawnPlayer(state)
+	state.playing = false
 	task.spawn(function()
 		local locationSkinId = fetchCountrySkinIdForPlayer(player)
 		if not locationSkinId then
@@ -10140,6 +11345,7 @@ function GameService:_removePlayer(player: Player)
 	if state.characterConnection then
 		state.characterConnection:Disconnect()
 	end
+	self:_removeFromParty(state)
 	self:_finishLife(state)
 	self:_savePlayerInfo(state, true)
 
@@ -10193,6 +11399,11 @@ function GameService:_loadPlayerInfo(state)
 	state.name = self:_displayNameForState(state)
 	state.avatarDisplayMode = normaliseAvatarDisplayMode(data.avatarDisplayMode)
 	state.useLocaleSkin = data.useLocaleSkin ~= false
+	state.friends = normaliseFriends(data.friends)
+	state.spawnNearEnabled = data.spawnNearEnabled ~= false
+	state.keybinds = if type(data.keybinds) == "table" then data.keybinds else nil
+	state.mapColor = if type(data.mapColor) == "table" then data.mapColor else nil
+	state.gridColor = if type(data.gridColor) == "table" then data.gridColor else nil
 
 	local equipped = normaliseWearing(data.wearing)
 	if equipped and state.ownedSkins[equipped] then
@@ -10309,6 +11520,17 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 	local nickname = normaliseNickname(state.nickname)
 	local avatarDisplayMode = normaliseAvatarDisplayMode(state.avatarDisplayMode)
 	local useLocaleSkin = state.useLocaleSkin ~= false
+	local friendsPayload = {}
+	for userId, name in state.friends or {} do
+		friendsPayload[#friendsPayload + 1] = {
+			u = userId,
+			n = if typeof(name) == "string" then name else nil,
+		}
+	end
+	local spawnNearEnabled = state.spawnNearEnabled ~= false
+	local keybinds = state.keybinds
+	local mapColor = state.mapColor
+	local gridColor = state.gridColor
 
 	local ok, err = pcall(function()
 		self.playerInfoStore:UpdateAsync(key, function(info)
@@ -10327,6 +11549,11 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 			info.nickname = if nickname ~= "" then nickname else nil
 			info.avatarDisplayMode = avatarDisplayMode
 			info.useLocaleSkin = useLocaleSkin
+			info.friends = friendsPayload
+			info.spawnNearEnabled = spawnNearEnabled
+			info.keybinds = keybinds
+			info.mapColor = mapColor
+			info.gridColor = gridColor
 			return info
 		end)
 	end)
@@ -10359,8 +11586,9 @@ function GameService:_watchCharacter(state, character: Model)
 		end
 
 		humanoid.Died:Connect(function()
-			if self.playersByUserId[state.userId] == state then
-				self:_respawnPlayer(state)
+			if self.playersByUserId[state.userId] == state and state.playing then
+				self:_enterSpectate(state, true)
+				self:_sendSocial(state, { kind = "hello" })
 			end
 		end)
 	end)
@@ -11641,7 +12869,14 @@ function GameService:_handleRespawnRequest(player: Player)
 		return
 	end
 	state.lastRespawnRequestAt = now
-	self:_respawnPlayer(state)
+	if self:_isPlaying(state) then
+		if self:_enterSpectate(state, false) then
+			self:_sendSocial(state, { kind = "hello" })
+			self:_broadcastSocial()
+		end
+	else
+		self:_playPlayer(state, state.spawnNearEnabled ~= false, "open", nil)
+	end
 end
 
 function GameService:_sendShopResult(player: Player, ok: boolean, message: string, reason: string?)
@@ -13637,7 +14872,12 @@ function GameService:_updatePlayerCenters()
 		end
 
 		if totalMass &lt;= 0 then
-			self:_respawnPlayer(state)
+			if state.playing then
+				self:_enterSpectate(state, true)
+				state.socialMessage = "You were eaten"
+				self:_sendSocial(state, { kind = "hello" })
+				self:_broadcastSocial()
+			end
 		else
 			state.center = weighted / totalMass
 		end
@@ -14526,6 +15766,703 @@ function GameService:_sendSnapshots(includeStatics: boolean?)
 		end
 	end
 end
+
+function GameService:_displayName(state): string
+	return self:_displayNameForState(state)
+end
+
+function GameService:_isPlaying(state): boolean
+	return state ~= nil and state.playing == true and #(state.cells or {}) &gt; 0
+end
+
+function GameService:_rateOk(state, key: string, seconds: number): boolean
+	local now = os.clock()
+	state.socialRate = state.socialRate or {}
+	if (state.socialRate[key] or 0) &gt; now then
+		return false
+	end
+	state.socialRate[key] = now + seconds
+	return true
+end
+
+function GameService:_friendSet(state)
+	state.friends = state.friends or {}
+	return state.friends
+end
+
+function GameService:_areFriends(a, b): boolean
+	if not a or not b then
+		return false
+	end
+	return a.friends and a.friends[b.userId] and b.friends and b.friends[a.userId]
+end
+
+function GameService:_partyOf(state)
+	if not state or not state.partyId then
+		return nil
+	end
+	return self.parties[state.partyId]
+end
+
+function GameService:_newPartyCode(): string
+	local chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	for _ = 1, 12 do
+		local code = ""
+		for i = 1, 5 do
+			local index = self.rng:NextInteger(1, #chars)
+			code ..= string.sub(chars, index, index)
+		end
+		local taken = false
+		for _, party in self.parties do
+			if party.code == code then
+				taken = true
+				break
+			end
+		end
+		if not taken then
+			return code
+		end
+	end
+	return tostring(self.rng:NextInteger(10000, 99999))
+end
+
+function GameService:_removeFromParty(state)
+	local party = self:_partyOf(state)
+	if not party then
+		if state then
+			state.partyId = nil
+		end
+		return
+	end
+	for i = #party.members, 1, -1 do
+		if party.members[i] == state.userId then
+			table.remove(party.members, i)
+		end
+	end
+	state.partyId = nil
+	if #party.members &lt;= 0 then
+		self.parties[party.id] = nil
+		return
+	end
+	if party.leader == state.userId then
+		party.leader = party.members[1]
+	end
+	self:_broadcastParty(party)
+end
+
+function GameService:_joinParty(state, party)
+	self:_removeFromParty(state)
+	party.members[#party.members + 1] = state.userId
+	state.partyId = party.id
+	state.pendingPartyId = nil
+	self:_broadcastParty(party)
+end
+
+function GameService:_broadcastParty(party)
+	if not party then
+		return
+	end
+	for _, userId in party.members do
+		local member = self.playersByUserId[userId]
+		if member then
+			self:_sendSocial(member)
+		end
+	end
+end
+
+function GameService:_socialPayload(state)
+	local friends = {}
+	for userId, storedName in self:_friendSet(state) do
+		local other = self.playersByUserId[userId]
+		friends[#friends + 1] = {
+			u = userId,
+			n = other and self:_displayNameForState(other) or (typeof(storedName) == "string" and storedName) or ("User " .. tostring(userId)),
+			online = other ~= nil,
+			playing = other and self:_isPlaying(other) or false,
+		}
+	end
+	table.sort(friends, function(a, b)
+		return a.n &lt; b.n
+	end)
+
+	local incoming = {}
+	for userId, kind in state.incomingRequests or {} do
+		local other = self.playersByUserId[userId]
+		incoming[#incoming + 1] = {
+			u = userId,
+			n = other and self:_displayNameForState(other) or "Player",
+			kind = kind,
+		}
+	end
+
+	local outgoing = {}
+	for userId, kind in state.outgoingRequests or {} do
+		local other = self.playersByUserId[userId]
+		outgoing[#outgoing + 1] = {
+			u = userId,
+			n = other and self:_displayNameForState(other) or "Player",
+			kind = kind,
+		}
+	end
+
+	local serverPlayers = {}
+	for _, other in self.playersByUserId do
+		serverPlayers[#serverPlayers + 1] = {
+			u = other.userId,
+			n = self:_displayNameForState(other),
+			playing = self:_isPlaying(other),
+		}
+	end
+	table.sort(serverPlayers, function(a, b)
+		return a.n &lt; b.n
+	end)
+
+	local partyPayload = nil
+	local party = self:_partyOf(state)
+	if party then
+		local members = {}
+		for _, userId in party.members do
+			local member = self.playersByUserId[userId]
+			members[#members + 1] = {
+				u = userId,
+				n = member and self:_displayNameForState(member) or "Player",
+				playing = member and self:_isPlaying(member) or false,
+			}
+		end
+		partyPayload = {
+			id = party.id,
+			code = party.code,
+			leader = party.leader,
+			members = members,
+		}
+	end
+
+	local now = os.clock()
+	return {
+		kind = "social",
+		playing = state.playing == true and self:_isPlaying(state),
+		spectateUnlockIn = math.max((state.spectateUnlockAt or 0) - now, 0),
+		spawnNearEnabled = state.spawnNearEnabled ~= false,
+		friends = friends,
+		incoming = incoming,
+		outgoing = outgoing,
+		serverPlayers = serverPlayers,
+		party = partyPayload or false,
+		message = state.socialMessage or "",
+		keybinds = state.keybinds,
+		mapColor = state.mapColor,
+		gridColor = state.gridColor,
+	}
+end
+
+function GameService:_worldSocialPayload()
+	local leaders = {}
+	local mapPlayers = {}
+	for _, state in self.playersByUserId do
+		if self:_isPlaying(state) then
+			leaders[#leaders + 1] = {
+				u = state.userId,
+				n = self:_displayNameForState(state),
+				m = math.floor(self:_playerMass(state) + 0.5),
+			}
+			mapPlayers[#mapPlayers + 1] = {
+				u = state.userId,
+				n = self:_displayNameForState(state),
+				x = state.center.X,
+				y = state.center.Y,
+			}
+		end
+	end
+	table.sort(leaders, function(a, b)
+		if a.m ~= b.m then
+			return a.m &gt; b.m
+		end
+		return a.n &lt; b.n
+	end)
+	local maxLeaders = math.max(Config.Leaderboard and Config.Leaderboard.MaxEntries or 10, 1)
+	if #leaders &gt; maxLeaders then
+		for i = maxLeaders + 1, #leaders do
+			leaders[i] = nil
+		end
+	end
+	return leaders, mapPlayers
+end
+
+function GameService:_sendSocial(state, extra)
+	if not state or not state.player or not self.remotes.SocialUpdate then
+		return
+	end
+	local payload = self:_socialPayload(state)
+	local leaders, mapPlayers = self:_worldSocialPayload()
+	payload.leaders = leaders
+	payload.mapPlayers = mapPlayers
+	if extra then
+		for key, value in extra do
+			payload[key] = value
+		end
+	end
+	state.socialMessage = nil
+	self.remotes.SocialUpdate:FireClient(state.player, payload)
+end
+
+function GameService:_broadcastSocial()
+	for _, state in self.playersByUserId do
+		if state.clientReady then
+			self:_sendSocial(state)
+		end
+	end
+end
+
+function GameService:_clearCells(state)
+	for i = #state.cells, 1, -1 do
+		local id = state.cells[i]
+		self.cells[id] = nil
+		state.cells[i] = nil
+	end
+end
+
+function GameService:_enterSpectate(state, force: boolean?): boolean
+	if not state then
+		return false
+	end
+	local now = os.clock()
+	local hasMass = #(state.cells or {}) &gt; 0
+	if not force and state.playing == true and hasMass and (state.spectateUnlockAt or 0) &gt; now then
+		state.socialMessage = "You can spectate in " .. tostring(math.ceil(state.spectateUnlockAt - now)) .. "s"
+		self:_sendSocial(state)
+		return false
+	end
+	if state.playing then
+		self:_finishLife(state)
+	end
+	self:_clearCells(state)
+	state.playing = false
+	state.frozen = false
+	return true
+end
+
+function GameService:_spawnClearanceOk(pos: Vector2, radius: number, ignoreOwnerId: number?): boolean
+	if self:_positionHitsBarrier(pos, radius) then
+		return false
+	end
+	if not self:_positionWithinWorld(pos, radius) then
+		return false
+	end
+	for _, cell in self.cells do
+		if cell.ownerUserId ~= ignoreOwnerId then
+			local minDist = cell.radius + radius + 18
+			if Vec2.distanceSquared(cell.pos, pos) &lt; minDist * minDist then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+function GameService:_trySpawnNearState(host, radius: number): Vector2?
+	if not host or not self:_isPlaying(host) then
+		return nil
+	end
+	local attempts = math.max(Config.Social and Config.Social.SpawnNearAttempts or 16, 4)
+	local ring = math.max(Config.Social and Config.Social.SpawnNearRadius or 280, 80)
+	for _ = 1, attempts do
+		local angle = self.rng:NextNumber(0, math.pi * 2)
+		local dist = self.rng:NextNumber(ring * 0.45, ring)
+		local pos = host.center + Vector2.new(math.cos(angle), math.sin(angle)) * dist
+		if self:_spawnClearanceOk(pos, radius, host.userId) then
+			return pos
+		end
+	end
+	return nil
+end
+
+function GameService:_pickOpenSpawn(radius: number): Vector2
+	local attempts = math.max(Config.Social and Config.Social.SpawnFallbackAttempts or 24, 8)
+	for _ = 1, attempts do
+		local pos = self:_randomInWorld(Config.World.SpawnPadding)
+		if self:_spawnClearanceOk(pos, radius, nil) then
+			return pos
+		end
+	end
+	return self:_pickSpawnerBiasedSpawnPosition(radius) or self:_randomInWorld(Config.World.SpawnPadding)
+end
+
+function GameService:_collectSpawnHosts(state, spawnMode: string?, spawnUserId: number?)
+	local hosts = {}
+	local seen = {}
+	local function add(other)
+		if other and other.userId ~= state.userId and self:_isPlaying(other) and not seen[other.userId] then
+			seen[other.userId] = true
+			hosts[#hosts + 1] = other
+		end
+	end
+	if spawnMode == "user" and typeof(spawnUserId) == "number" then
+		add(self.playersByUserId[spawnUserId])
+	elseif spawnMode == "party" then
+		local party = self:_partyOf(state)
+		if party then
+			for _, userId in party.members do
+				add(self.playersByUserId[userId])
+			end
+		end
+	end
+	return hosts
+end
+
+function GameService:_otherPlayingHosts(state, ignore)
+	local hosts = {}
+	for _, other in self.playersByUserId do
+		if other.userId ~= state.userId and self:_isPlaying(other) and not (ignore and ignore[other.userId]) then
+			hosts[#hosts + 1] = other
+		end
+	end
+	for i = #hosts, 2, -1 do
+		local j = self.rng:NextInteger(1, i)
+		hosts[i], hosts[j] = hosts[j], hosts[i]
+	end
+	return hosts
+end
+
+function GameService:_playPlayer(state, spawnNear: boolean?, spawnMode: string?, spawnUserId: number?)
+	if self:_isPlaying(state) then
+		state.socialMessage = "You are already in the map"
+		self:_sendSocial(state)
+		return
+	end
+	if not self:_rateOk(state, "play", 0.8) then
+		return
+	end
+	self:_clearCells(state)
+	local radius = massToRadius(startMassForLevel(state.accountLevel))
+	local pos = nil
+	local preferred = {}
+	if spawnNear ~= false and spawnMode ~= "open" then
+		local hosts = self:_collectSpawnHosts(state, spawnMode, spawnUserId)
+		for _, host in hosts do
+			preferred[host.userId] = true
+			pos = self:_trySpawnNearState(host, radius)
+			if pos then
+				break
+			end
+		end
+		if not pos then
+			if spawnMode == "user" then
+				local party = self:_partyOf(state)
+				if party then
+					for _, userId in party.members do
+						pos = self:_trySpawnNearState(self.playersByUserId[userId], radius)
+						if pos then
+							break
+						end
+					end
+				end
+				if not pos then
+					for userId in self:_friendSet(state) do
+						pos = self:_trySpawnNearState(self.playersByUserId[userId], radius)
+						if pos then
+							break
+						end
+					end
+				end
+			end
+		end
+		if not pos then
+			for _, host in self:_otherPlayingHosts(state, preferred) do
+				pos = self:_trySpawnNearState(host, radius)
+				if pos then
+					break
+				end
+			end
+		end
+	end
+	if not pos then
+		pos = self:_pickOpenSpawn(radius)
+	end
+	state.center = pos
+	state.playing = true
+	state.spectateUnlockAt = os.clock() + math.max(Config.Social and Config.Social.SpectateLockSeconds or 10, 0)
+	state.lastSplitToken = state.input.splitToken
+	state.lastEjectToken = state.input.ejectToken
+	state.ejectCycleOffset = 0
+	state.frozen = false
+	self:_spawnPlayerCell(state, pos, startMassForLevel(state.accountLevel), Vector2.zero)
+	state.needsStaticSnapshot = true
+	self:_sendSocial(state, { kind = "hello" })
+	self:_broadcastSocial()
+end
+
+function GameService:_handleSocialAction(player: Player, payload)
+	local state = self.playersByUserId[player.UserId]
+	if not state or typeof(payload) ~= "table" or typeof(payload.action) ~= "string" then
+		return
+	end
+	local action = payload.action
+	local targetId = tonumber(payload.userId)
+	local target = targetId and self.playersByUserId[targetId] or nil
+
+	if action == "play" then
+		self:_playPlayer(state, payload.spawnNear, payload.spawnMode, targetId)
+		return
+	elseif action == "spectate" then
+		if self:_enterSpectate(state, false) then
+			self:_sendSocial(state, { kind = "hello" })
+			self:_broadcastSocial()
+		end
+		return
+	elseif action == "settings" then
+		if typeof(payload.spawnNearEnabled) == "boolean" then
+			state.spawnNearEnabled = payload.spawnNearEnabled
+		end
+		if typeof(payload.keybinds) == "table" then
+			local binds = {}
+			for key, name in payload.keybinds do
+				if typeof(key) == "string" and typeof(name) == "string" and #name &lt;= 24 then
+					binds[key] = name
+				end
+			end
+			state.keybinds = binds
+		end
+		if typeof(payload.mapColor) == "table" then
+			state.mapColor = {
+				tonumber(payload.mapColor[1]) or 1,
+				tonumber(payload.mapColor[2]) or 1,
+				tonumber(payload.mapColor[3]) or 1,
+			}
+		end
+		if typeof(payload.gridColor) == "table" then
+			state.gridColor = {
+				tonumber(payload.gridColor[1]) or 0.85,
+				tonumber(payload.gridColor[2]) or 0.88,
+				tonumber(payload.gridColor[3]) or 0.92,
+			}
+		end
+		self:_markPlayerInfoDirty(state, true)
+		self:_sendSocial(state)
+		return
+	elseif action == "friendAdd" then
+		if not target or targetId == state.userId then
+			state.socialMessage = "That player is not in this server"
+			self:_sendSocial(state)
+			return
+		end
+		if self:_areFriends(state, target) then
+			state.socialMessage = "Already friends"
+			self:_sendSocial(state)
+			return
+		end
+		local friendCount = 0
+		for _ in self:_friendSet(state) do
+			friendCount += 1
+		end
+		if friendCount &gt;= math.max(Config.Social and Config.Social.MaxFriends or 100, 8) then
+			state.socialMessage = "Friend list is full"
+			self:_sendSocial(state)
+			return
+		end
+		if not self:_rateOk(state, "friend", 1) then
+			return
+		end
+		state.outgoingRequests = state.outgoingRequests or {}
+		state.incomingRequests = state.incomingRequests or {}
+		target.outgoingRequests = target.outgoingRequests or {}
+		target.incomingRequests = target.incomingRequests or {}
+		if target.outgoingRequests[state.userId] == "friend" then
+			state.friends[targetId] = self:_displayNameForState(target)
+			target.friends[state.userId] = self:_displayNameForState(state)
+			target.outgoingRequests[state.userId] = nil
+			state.incomingRequests[targetId] = nil
+			self:_markPlayerInfoDirty(state, true)
+			self:_markPlayerInfoDirty(target, true)
+			state.socialMessage = "You are now friends with " .. self:_displayNameForState(target)
+			self:_sendSocial(state)
+			self:_sendSocial(target)
+			return
+		end
+		state.outgoingRequests[targetId] = "friend"
+		target.incomingRequests[state.userId] = "friend"
+		state.socialMessage = "Friend request sent"
+		self:_sendSocial(state)
+		self:_sendSocial(target)
+		return
+	elseif action == "friendAccept" then
+		if not target then
+			return
+		end
+		state.incomingRequests = state.incomingRequests or {}
+		if state.incomingRequests[targetId] ~= "friend" then
+			return
+		end
+		state.incomingRequests[targetId] = nil
+		if target.outgoingRequests then
+			target.outgoingRequests[state.userId] = nil
+		end
+		state.friends[targetId] = self:_displayNameForState(target)
+		target.friends[state.userId] = self:_displayNameForState(state)
+		self:_markPlayerInfoDirty(state, true)
+		self:_markPlayerInfoDirty(target, true)
+		self:_sendSocial(state)
+		self:_sendSocial(target)
+		return
+	elseif action == "friendDecline" then
+		state.incomingRequests = state.incomingRequests or {}
+		state.incomingRequests[targetId or 0] = nil
+		if target and target.outgoingRequests then
+			target.outgoingRequests[state.userId] = nil
+			self:_sendSocial(target)
+		end
+		self:_sendSocial(state)
+		return
+	elseif action == "friendRemove" then
+		if not targetId then
+			return
+		end
+		state.friends[targetId] = nil
+		if state.incomingRequests then
+			state.incomingRequests[targetId] = nil
+		end
+		if state.outgoingRequests then
+			state.outgoingRequests[targetId] = nil
+		end
+		if target then
+			target.friends[state.userId] = nil
+			if target.incomingRequests then
+				target.incomingRequests[state.userId] = nil
+			end
+			if target.outgoingRequests then
+				target.outgoingRequests[state.userId] = nil
+			end
+			self:_markPlayerInfoDirty(target, true)
+			self:_sendSocial(target)
+		end
+		self:_markPlayerInfoDirty(state, true)
+		self:_sendSocial(state)
+		return
+	elseif action == "partyCreate" then
+		if self:_partyOf(state) then
+			state.socialMessage = "Leave your party first"
+			self:_sendSocial(state)
+			return
+		end
+		if not self:_rateOk(state, "party", 1) then
+			return
+		end
+		local id = HttpService:GenerateGUID(false)
+		local party = {
+			id = id,
+			code = self:_newPartyCode(),
+			leader = state.userId,
+			members = { state.userId },
+		}
+		self.parties[id] = party
+		state.partyId = id
+		state.socialMessage = "Party code " .. party.code
+		self:_sendSocial(state)
+		return
+	elseif action == "partyJoin" then
+		local code = string.upper(string.gsub(tostring(payload.code or ""), "%s+", ""))
+		local found = nil
+		for _, party in self.parties do
+			if party.code == code then
+				found = party
+				break
+			end
+		end
+		if not found then
+			state.socialMessage = "No party uses that code"
+			self:_sendSocial(state)
+			return
+		end
+		if found.id == state.partyId then
+			state.socialMessage = "You are already in that party"
+			self:_sendSocial(state)
+			return
+		end
+		if #found.members &gt;= math.max(Config.Social and Config.Social.PartyMaxMembers or 8, 2) then
+			state.socialMessage = "That party is full"
+			self:_sendSocial(state)
+			return
+		end
+		self:_joinParty(state, found)
+		return
+	elseif action == "partyLeave" then
+		self:_removeFromParty(state)
+		self:_sendSocial(state)
+		return
+	elseif action == "partyInvite" then
+		if not target then
+			state.socialMessage = "They are not in this server"
+			self:_sendSocial(state)
+			return
+		end
+		local party = self:_partyOf(state)
+		if not party then
+			state.socialMessage = "Create a party first"
+			self:_sendSocial(state)
+			return
+		end
+		if target.partyId == party.id then
+			state.socialMessage = "They are already in your party"
+			self:_sendSocial(state)
+			return
+		end
+		if not self:_areFriends(state, target) then
+			state.socialMessage = "You can only invite friends"
+			self:_sendSocial(state)
+			return
+		end
+		if #party.members &gt;= math.max(Config.Social and Config.Social.PartyMaxMembers or 8, 2) then
+			state.socialMessage = "Your party is full"
+			self:_sendSocial(state)
+			return
+		end
+		target.incomingRequests = target.incomingRequests or {}
+		target.incomingRequests[state.userId] = "party"
+		target.pendingPartyId = party.id
+		state.socialMessage = "Invite sent"
+		self:_sendSocial(state)
+		self:_sendSocial(target)
+		return
+	elseif action == "partyAccept" then
+		local party = target and self:_partyOf(target) or (state.pendingPartyId and self.parties[state.pendingPartyId])
+		state.incomingRequests = state.incomingRequests or {}
+		if targetId then
+			state.incomingRequests[targetId] = nil
+		end
+		if not party then
+			state.socialMessage = "That party is gone"
+			self:_sendSocial(state)
+			return
+		end
+		if #party.members &gt;= math.max(Config.Social and Config.Social.PartyMaxMembers or 8, 2) then
+			state.socialMessage = "That party is full"
+			self:_sendSocial(state)
+			return
+		end
+		self:_joinParty(state, party)
+		return
+	elseif action == "partyDecline" then
+		state.incomingRequests = state.incomingRequests or {}
+		if targetId then
+			state.incomingRequests[targetId] = nil
+		end
+		state.pendingPartyId = nil
+		self:_sendSocial(state)
+		return
+	elseif action == "partyKick" then
+		local party = self:_partyOf(state)
+		if not party or party.leader ~= state.userId or not target then
+			return
+		end
+		if target.partyId ~= party.id then
+			return
+		end
+		self:_removeFromParty(target)
+		self:_sendSocial(target)
+		self:_broadcastParty(party)
+		return
+	end
+end
+
 
 return GameService
 </ProtectedString>
