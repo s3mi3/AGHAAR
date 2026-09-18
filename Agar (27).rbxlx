@@ -7639,41 +7639,9 @@ function MainMenu:_buildPlayPage()
 		self:_beginHudEdit()
 	end)
 
-	local spawnTitle = label(page, "Spawn near", 16, TEXT, true)
-	spawnTitle.Position = UDim2.fromOffset(0, 112)
-	spawnTitle.Size = UDim2.fromOffset(200, 22)
-
-	self.spawnNearToggle = button(page, "Spawn near: ON", ACCENT)
-	self.spawnNearToggle.Position = UDim2.fromOffset(0, 142)
-	self.spawnNearToggle.Size = UDim2.fromOffset(180, 36)
-	self.spawnNearToggle.MouseButton1Click:Connect(function()
-		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
-		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
-		self:_refreshPlay()
-	end)
-
-	self.spawnTargetList = Instance.new("ScrollingFrame")
-	self.spawnTargetList.BackgroundColor3 = PANEL2
-	self.spawnTargetList.BorderSizePixel = 0
-	self.spawnTargetList.Position = UDim2.fromOffset(0, 192)
-	self.spawnTargetList.Size = UDim2.new(1, 0, 1, -202)
-	self.spawnTargetList.ScrollBarThickness = 6
-	self.spawnTargetList.CanvasSize = UDim2.fromOffset(0, 0)
-	self.spawnTargetList.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	self.spawnTargetList.Parent = page
-	corner(self.spawnTargetList, 8)
-	local layout = Instance.new("UIListLayout")
-	layout.Padding = UDim.new(0, 6)
-	layout.Parent = self.spawnTargetList
-	local pad = Instance.new("UIPadding")
-	pad.PaddingTop = UDim.new(0, 8)
-	pad.PaddingLeft = UDim.new(0, 8)
-	pad.PaddingRight = UDim.new(0, 8)
-	pad.Parent = self.spawnTargetList
-
 	self.statusLabel = label(page, "", 14, MUTED, false)
-	self.statusLabel.Position = UDim2.fromOffset(196, 142)
-	self.statusLabel.Size = UDim2.new(1, -196, 0, 36)
+	self.statusLabel.Position = UDim2.fromOffset(0, 108)
+	self.statusLabel.Size = UDim2.new(1, 0, 0, 36)
 	self.statusLabel.TextWrapped = true
 end
 
@@ -7767,9 +7735,42 @@ end
 
 function MainMenu:_buildFriendsPage()
 	local page = self:_page("friends")
+
+	local spawnTitle = label(page, "Spawn near", 16, TEXT, true)
+	spawnTitle.Size = UDim2.fromOffset(220, 22)
+
+	self.spawnNearToggle = button(page, "Spawn near: ON", ACCENT)
+	self.spawnNearToggle.Position = UDim2.fromOffset(0, 28)
+	self.spawnNearToggle.Size = UDim2.fromOffset(180, 36)
+	self.spawnNearToggle.MouseButton1Click:Connect(function()
+		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
+		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
+		self:_refreshSpawnNear()
+	end)
+
+	self.spawnTargetList = Instance.new("ScrollingFrame")
+	self.spawnTargetList.BackgroundColor3 = PANEL2
+	self.spawnTargetList.BorderSizePixel = 0
+	self.spawnTargetList.Position = UDim2.fromOffset(0, 72)
+	self.spawnTargetList.Size = UDim2.new(1, 0, 0, 118)
+	self.spawnTargetList.ScrollBarThickness = 6
+	self.spawnTargetList.CanvasSize = UDim2.fromOffset(0, 0)
+	self.spawnTargetList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	self.spawnTargetList.Parent = page
+	corner(self.spawnTargetList, 8)
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 6)
+	layout.Parent = self.spawnTargetList
+	local pad = Instance.new("UIPadding")
+	pad.PaddingTop = UDim.new(0, 8)
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = self.spawnTargetList
+
 	local cols = Instance.new("Frame")
 	cols.BackgroundTransparency = 1
-	cols.Size = UDim2.fromScale(1, 1)
+	cols.Position = UDim2.fromOffset(0, 202)
+	cols.Size = UDim2.new(1, 0, 1, -202)
 	cols.Parent = page
 
 	self.lists.server = self:_makeList(cols, "In this server", UDim2.new(0.33, -8, 1, 0), UDim2.fromScale(0, 0))
@@ -7895,14 +7896,6 @@ function MainMenu:_buildSettingsPage()
 		end)
 		self.bindButtons[entry.id] = b
 	end
-
-	self.settingsSpawnToggle = button(right, "Spawn near: ON", ACCENT)
-	self.settingsSpawnToggle.Size = UDim2.new(1, 0, 0, 36)
-	self.settingsSpawnToggle.MouseButton1Click:Connect(function()
-		self.social.spawnNearEnabled = not self.social.spawnNearEnabled
-		self:_fire({ action = "settings", spawnNearEnabled = self.social.spawnNearEnabled })
-		self:_refreshPlay()
-	end)
 
 	label(right, "HUD", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
 
@@ -8472,6 +8465,7 @@ end
 
 function MainMenu:_refreshAll()
 	self:_refreshPlay()
+	self:_refreshSpawnNear()
 	self:_refreshFriends()
 	self:_refreshParty()
 	self:_refreshSettings()
@@ -8578,17 +8572,43 @@ function MainMenu:_refreshLockLabel()
 end
 
 function MainMenu:_refreshPlay()
-	if not self.spawnNearToggle then
+	self:_refreshLockLabel()
+end
+
+function MainMenu:_personIsInMap(person): boolean
+	return typeof(person) == "table" and person.playing == true
+end
+
+function MainMenu:_refreshSpawnNear()
+	if not self.spawnNearToggle or not self.spawnTargetList then
 		return
 	end
 	local on = self.social.spawnNearEnabled == true
 	self.spawnNearToggle.Text = if on then "Spawn near: ON" else "Spawn near: OFF"
 	self.spawnNearToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
-	if self.settingsSpawnToggle then
-		self.settingsSpawnToggle.Text = if on then "Spawn near: ON" else "Spawn near: OFF"
-		self.settingsSpawnToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
+
+	local validUserIds = {}
+	local partyHasInMap = false
+	if self.social.party then
+		for _, member in self.social.party.members or {} do
+			if member.u ~= self.player.UserId and self:_personIsInMap(member) then
+				validUserIds[member.u] = true
+				partyHasInMap = true
+			end
+		end
 	end
-	self:_refreshLockLabel()
+	for _, friend in self.social.friends or {} do
+		if self:_personIsInMap(friend) then
+			validUserIds[friend.u] = true
+		end
+	end
+	if self.spawnMode == "user" and not validUserIds[self.spawnUserId] then
+		self.spawnMode = "open"
+		self.spawnUserId = nil
+	elseif self.spawnMode == "party" and not partyHasInMap then
+		self.spawnMode = "open"
+		self.spawnUserId = nil
+	end
 
 	self:_clear(self.spawnTargetList)
 	local function addTarget(text, mode, userId, selected)
@@ -8601,14 +8621,14 @@ function MainMenu:_refreshPlay()
 		b.MouseButton1Click:Connect(function()
 			self.spawnMode = mode
 			self.spawnUserId = userId
-			self:_refreshPlay()
+			self:_refreshSpawnNear()
 		end)
 	end
 	addTarget("Open space", "open", nil, self.spawnMode == "open")
-	if self.social.party then
+	if partyHasInMap then
 		addTarget("Anyone in my party", "party", nil, self.spawnMode == "party" and not self.spawnUserId)
 		for _, member in self.social.party.members or {} do
-			if member.u ~= self.player.UserId then
+			if member.u ~= self.player.UserId and self:_personIsInMap(member) then
 				addTarget("Party: " .. (member.n or "Player"), "user", member.u, self.spawnMode == "user" and self.spawnUserId == member.u)
 			end
 		end
@@ -8620,7 +8640,7 @@ function MainMenu:_refreshPlay()
 		end
 	end
 	for _, friend in self.social.friends or {} do
-		if not listed[friend.u] then
+		if not listed[friend.u] and self:_personIsInMap(friend) then
 			addTarget("Friend: " .. (friend.n or "Player"), "user", friend.u, self.spawnMode == "user" and self.spawnUserId == friend.u)
 		end
 	end
