@@ -3228,9 +3228,16 @@ function GameService:_moveCells(dt: number)
 	local playerHighMassDecayFraction = {}
 	local clusterRatio = math.max(Config.Cell.ClusterMaxSpeedRatio or 1, 1)
 	local cohesion = math.clamp(Config.Cell.CohesionStrength or 0, 0, 1)
-	local highDecayThreshold = math.max(Config.Player.HighMassDecayThreshold or math.huge, 1)
-	local highDecayAtThreshold = math.max(Config.Player.HighMassDecayPerSecond or 0, 0)
-	local highDecayExponent = math.max(Config.Player.HighMassDecayExponent or 1, 0)
+	local highDecayStartMass = math.max(Config.Player.HighMassDecayStartMass or math.huge, 1)
+	local highDecayStartRate = math.max(Config.Player.HighMassDecayStartPerSecond or 0, 0)
+	local highDecayReferenceMass = math.max(
+		Config.Player.HighMassDecayReferenceMass or highDecayStartMass + 1,
+		highDecayStartMass + 1
+	)
+	local highDecayReferenceRate = math.max(
+		Config.Player.HighMassDecayReferencePerSecond or highDecayStartRate,
+		highDecayStartRate
+	)
 	for userId, state in self.playersByUserId do
 		local maxMass = 0
 		local totalMass = 0
@@ -3256,8 +3263,11 @@ function GameService:_moveCells(dt: number)
 		if totalMass > 0 and #state.cells > 1 then
 			playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
 		end
-		if totalMass > highDecayThreshold and highDecayAtThreshold > 0 then
-			local lossPerSecond = highDecayAtThreshold * (totalMass / highDecayThreshold) ^ highDecayExponent
+		if totalMass >= highDecayStartMass and highDecayStartRate > 0 then
+			local massProgress = (totalMass - highDecayStartMass)
+				/ (highDecayReferenceMass - highDecayStartMass)
+			local lossPerSecond = highDecayStartRate
+				+ (highDecayReferenceRate - highDecayStartRate) * math.max(massProgress, 0)
 			playerHighMassDecayFraction[userId] = math.clamp(lossPerSecond * dt / totalMass, 0, 0.95)
 		end
 	end
