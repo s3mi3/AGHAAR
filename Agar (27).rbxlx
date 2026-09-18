@@ -3576,6 +3576,10 @@ local function displayScore(mass: number): string
 	return tostring(math.floor(mass + 0.5))
 end
 
+local function massToRadius(mass: number): number
+	return math.sqrt(math.max(mass or 1, 1)) * (Config.Cell.RadiusScale or 0.78)
+end
+
 local function normaliseAvatarDisplayMode(value): string
 	if value == "face" or value == "bust" or value == "fullBody" or value == "hidden" then
 		return value
@@ -4692,6 +4696,112 @@ function Renderer:_ejectedColor(payload): Color3
 	return colorFromPayload(payload)
 end
 
+function Renderer:_clearMergeVisualHold(eater)
+	if not eater then
+		return
+	end
+	eater.mergeHoldRadius = nil
+	eater.mergeHoldMass = nil
+	eater.mergeGoalRadius = nil
+	eater.mergeGoalMass = nil
+	eater.mergeVisualRadius = nil
+	eater.mergePending = nil
+	eater.mergeEdgeExcited = nil
+	eater.visualMass = nil
+end
+
+function Renderer:_beginMergeVisualHold(eater)
+	if not eater then
+		return
+	end
+	if eater.mergeHoldRadius == nil then
+		eater.mergeHoldRadius = eater.radius
+		eater.mergeHoldMass = eater.mass
+		eater.mergeVisualRadius = eater.radius
+		eater.visualMass = eater.mass
+	end
+	eater.mergePending = true
+	eater.feedGrow = false
+	eater.feedSlices = nil
+	eater.feedGoalRadius = nil
+	eater.radiusVelocity = 0
+end
+
+function Renderer:_mergeStackProgress(prey, eater): number
+	if not prey or not eater then
+		return 0
+	end
+	local eaterPos = eater.displayPos or eater.targetPos
+	local preyPos = prey.displayPos or prey.targetPos
+	if typeof(eaterPos) ~= "Vector2" or typeof(preyPos) ~= "Vector2" then
+		return 0
+	end
+	-- Mass transfers once the swallowed cell's center is inside the eater
+	-- as it looked when this swallow started — not when they first touch.
+	local remainingDist = (preyPos - eaterPos).Magnitude
+	local underRadius = math.max(prey.consumeEaterStartRadius or eater.mergeHoldRadius or eater.radius or 1, 1)
+	local stackT = 1 - math.clamp(remainingDist / (underRadius * 0.9), 0, 1)
+	return stackT * stackT * stackT * (stackT * (stackT * 6 - 15) + 10)
+end
+
+function Renderer:_refreshMergeVisual(eater)
+	if not eater or eater.mergeHoldRadius == nil then
+		return
+	end
+	local visualMass = eater.mergeHoldMass
+	if typeof(visualMass) ~= "number" then
+		visualMass = eater.mass or 1
+	end
+	local maxGrow = 0
+	for _, other in self.cellStates do
+		if other.consumeTarget == eater and other.consumeIsMerge == true and other.consumeFade ~= true then
+			local grow = self:_mergeStackProgress(other, eater)
+			maxGrow = math.max(maxGrow, grow)
+			visualMass += (other.consumeMass or 0) * grow
+		end
+	end
+	eater.visualMass = visualMass
+	eater.mergeVisualRadius = massToRadius(visualMass)
+	eater.radius = eater.mergeVisualRadius
+	eater.radiusVelocity = 0
+	if maxGrow &gt; 0.08 and eater.mergeEdgeExcited ~= true then
+		eater.mergeEdgeExcited = true
+		self:_exciteLiquidEdge(eater, os.clock(), 0.8)
+	end
+end
+
+function Renderer:_settleConsumedMergeMass(prey, eater)
+	if not prey or not eater or eater.mergeHoldRadius == nil then
+		return
+	end
+	local add = prey.consumeMass or 0
+	if add &gt; 0 then
+		eater.mergeHoldMass = (eater.mergeHoldMass or eater.mass or 0) + add
+		eater.mergeHoldRadius = massToRadius(eater.mergeHoldMass)
+		eater.visualMass = eater.mergeHoldMass
+		eater.mergeVisualRadius = eater.mergeHoldRadius
+		eater.radius = eater.mergeHoldRadius
+	end
+end
+
+function Renderer:_finishMergeVisualHoldIfIdle(eater)
+	if not eater or eater.mergeHoldRadius == nil then
+		return
+	end
+	for _, other in self.cellStates do
+		if other.consumeTarget == eater and other.consumeIsMerge == true and other.consumeFade ~= true and other.consumeUntil then
+			self:_refreshMergeVisual(eater)
+			return
+		end
+	end
+	local goalRadius = eater.mergeGoalRadius or eater.targetRadius
+	if typeof(goalRadius) == "number" then
+		eater.radius = goalRadius
+	end
+	eater.radiusVelocity = 0
+	self:_clearMergeVisualHold(eater)
+end
+
 function Renderer:_abortConsumesInto(target)
 	if not target then
 		return
@@ -4711,6 +4821,7 @@ function Renderer:_abortConsumesInto(target)
 			state.isOwn = false
 		end
 	end
+	self:_clearMergeVisualHold(target)
 end
 
 function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
@@ -4755,9 +4866,12 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartOffset = state.displayPos - (bestTarget.displayPos or bestTarget.targetPos)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
-			bestTarget.snapMassGain = true
+			state.consumeMass = state.mass
+			state.consumeEaterStartRadius = bestTarget.radius
 			if isMerge then
-				self:_exciteLiquidEdge(bestTarget, now, 0.8)
+				self:_beginMergeVisualHold(bestTarget)
+			else
+				bestTarget.snapMassGain = true
 			end
 			state.extrapolate = false
 			state.isOwn = false
@@ -4923,7 +5037,12 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			-- tick used to exceed the old mass threshold and pop like a merge.
 			local snap = state.snapMassGain == true
 			state.snapMassGain = nil
-			if snap then
+			if state.mergePending or state.mergeHoldRadius then
+				state.mergeGoalRadius = radius
+				state.feedGrow = false
+				state.feedSlices = nil
+				state.feedGoalRadius = nil
+			elseif snap then
 				local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
 				state.radius = state.radius + (radius - state.radius) * pop
 				state.radiusVelocity = 0
@@ -5008,6 +5127,12 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 	state.targetPos = pos
 	state.targetRadius = radius
 	state.mass = mass
+	if (state.mergePending or state.mergeHoldRadius) and typeof(mass) == "number" then
+		state.mergeGoalMass = mass
+		if typeof(radius) == "number" then
+			state.mergeGoalRadius = radius
+		end
+	end
 	state.color = color
 	state.extra = extra
 	state.isOwn = extra and extra.isOwn == true
@@ -5466,6 +5591,11 @@ function Renderer:_projectOwnAuthoritativeTarget(state)
 end
 
 function Renderer:_stepCellRadius(state, dt: number)
+	if state.mergeHoldRadius ~= nil then
+		state.radius = state.mergeVisualRadius or state.mergeHoldRadius
+		state.radiusVelocity = 0
+		return
+	end
 	local target = state.targetRadius or state.radius
 	local current = state.radius
 	local growing = target &gt; current
@@ -5683,14 +5813,21 @@ function Renderer:_stepEntityStates(states, dt: number)
 				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
 				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
+				self:_refreshMergeVisual(target)
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - progress), 0)
 			end
 			if now &gt;= state.consumeUntil then
+				local consumeTarget = state.consumeTarget
+				local wasMerge = state.consumeIsMerge == true
 				states[id] = nil
 				self.cellPool:release(id)
+				if wasMerge then
+					self:_settleConsumedMergeMass(state, consumeTarget)
+					self:_finishMergeVisualHoldIfIdle(consumeTarget)
+				end
 			end
 			continue
 		end
@@ -5999,6 +6136,15 @@ function Renderer:_updateCameraOwnRadius()
 	local hasOwn = false
 	for _, state in self.cellStates do
 		if state.isOwn and state.confirmed and not state.consumeUntil then
+			sum += state.radius
+			hasOwn = true
+		elseif state.consumeIsMerge == true
+			and state.consumeFade ~= true
+			and state.consumeTarget
+			and state.consumeTarget.isOwn
+		then
+			-- Keep swallowed own cells in the zoom sum until they disappear,
+			-- otherwise the camera dives in before the eater visually grows.
 			sum += state.radius
 			hasOwn = true
 		end
@@ -6316,12 +6462,13 @@ function Renderer:render(dt: number?)
 			local drawOptions = state.drawOptions or {}
 			state.drawOptions = drawOptions
 			drawOptions.name = name
+			local shownMass = state.visualMass or state.mass
 			if state.consumeIsMerge then
 				drawOptions.name = ""
 				drawOptions.score = ""
-			elseif state.labelMass ~= state.mass or drawOptions.score == nil then
-				state.labelMass = state.mass
-				drawOptions.score = state.mass and displayScore(state.mass) or ""
+			elseif shownMass ~= nil and (state.labelMass ~= shownMass or drawOptions.score == nil) then
+				state.labelMass = shownMass
+				drawOptions.score = displayScore(shownMass)
 			end
 			drawOptions.baseImage = nil
 			drawOptions.baseImageColor = nil
