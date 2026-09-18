@@ -12734,7 +12734,7 @@ function GameService:_pickSpawnerBiasedSpawnPosition(radius: number): Vector2?
 		local dir = Vec2.fromAngle(self.rng:NextNumber(0, math.pi * 2))
 		local distance = self.rng:NextNumber(minDistance, maxDistance)
 		local pos = self:_clampToWorld(spawner.pos + dir * distance, radius)
-		if not self:_positionHitsBarrier(pos, radius) then
+		if not self:_positionHitsBarrier(pos, radius) and self:_spawnClearanceOk(pos, radius) then
 			return pos
 		end
 	end
@@ -17188,6 +17188,10 @@ function GameService:_enterSpectate(state, force: boolean?): boolean
 	return true
 end
 
+function GameService:_spawnClearanceGap(radius: number): number
+	return math.max(Config.Social and Config.Social.SpawnClearanceGap or 56, radius)
+end
+
 function GameService:_spawnClearanceOk(pos: Vector2, radius: number, ignoreOwnerId: number?): boolean
 	if self:_positionHitsBarrier(pos, radius) then
 		return false
@@ -17195,9 +17199,13 @@ function GameService:_spawnClearanceOk(pos: Vector2, radius: number, ignoreOwner
 	if not self:_positionWithinWorld(pos, radius) then
 		return false
 	end
+	local gap = self:_spawnClearanceGap(radius)
 	for _, cell in self.cells do
 		if cell.ownerUserId ~= ignoreOwnerId then
-			local minDist = cell.radius + radius + 18
+			-- Must sit fully outside every other blob, including teammates.
+			-- Ignoring the host used to spawn inside their cell, which looked
+			-- like Play failed because they ate you on the first tick.
+			local minDist = cell.radius + radius + gap
 			if Vec2.distanceSquared(cell.pos, pos) &lt; minDist * minDist then
 				return false
 			end
@@ -17206,17 +17214,39 @@ function GameService:_spawnClearanceOk(pos: Vector2, radius: number, ignoreOwner
 	return true
 end
 
+function GameService:_hostOccupiedRadius(host): number
+	if not host then
+		return 0
+	end
+	local center = host.center or Vector2.zero
+	local reach = 0
+	for _, id in host.cells or {} do
+		local cell = self.cells[id]
+		if cell then
+			local outer = (cell.pos - center).Magnitude + cell.radius
+			if outer &gt; reach then
+				reach = outer
+			end
+		end
+	end
+	return reach
+end
+
 function GameService:_trySpawnNearState(host, radius: number): Vector2?
 	if not host or not self:_isPlaying(host) then
 		return nil
 	end
-	local attempts = math.max(Config.Social and Config.Social.SpawnNearAttempts or 16, 4)
-	local ring = math.max(Config.Social and Config.Social.SpawnNearRadius or 280, 80)
+	local attempts = math.max(Config.Social and Config.Social.SpawnNearAttempts or 16, 32)
+	local extraRing = math.max(Config.Social and Config.Social.SpawnNearRadius or 280, 80)
+	local gap = self:_spawnClearanceGap(radius)
+	local minRing = self:_hostOccupiedRadius(host) + radius + gap
+	local maxRing = minRing + extraRing
 	for _ = 1, attempts do
 		local angle = self.rng:NextNumber(0, math.pi * 2)
-		local dist = self.rng:NextNumber(ring * 0.45, ring)
+		local dist = self.rng:NextNumber(minRing, maxRing)
 		local pos = host.center + Vector2.new(math.cos(angle), math.sin(angle)) * dist
-		if self:_spawnClearanceOk(pos, radius, host.userId) then
+		pos = self:_clampToWorld(pos, radius)
+		if self:_spawnClearanceOk(pos, radius) then
 			return pos
 		end
 	end
@@ -17224,14 +17254,29 @@ function GameService:_trySpawnNearState(host, radius: number): Vector2?
 end
 
 function GameService:_pickOpenSpawn(radius: number): Vector2
-	local attempts = math.max(Config.Social and Config.Social.SpawnFallbackAttempts or 24, 8)
+	local attempts = math.max(Config.Social and Config.Social.SpawnFallbackAttempts or 24, 48)
 	for _ = 1, attempts do
 		local pos = self:_randomInWorld(Config.World.SpawnPadding)
-		if self:_spawnClearanceOk(pos, radius, nil) then
+		if self:_spawnClearanceOk(pos, radius) then
 			return pos
 		end
 	end
-	return self:_pickSpawnerBiasedSpawnPosition(radius) or self:_randomInWorld(Config.World.SpawnPadding)
+	local biased = self:_pickSpawnerBiasedSpawnPosition(radius)
+	if biased and self:_spawnClearanceOk(biased, radius) then
+		return biased
+	end
+	for _ = 1, 40 do
+		local origin = self:_randomInWorld(Config.World.SpawnPadding)
+		for ring = 1, 8 do
+			local dist = (radius + self:_spawnClearanceGap(radius)) * (2 + ring)
+			local angle = self.rng:NextNumber(0, math.pi * 2)
+			local pos = self:_clampToWorld(origin + Vector2.new(math.cos(angle), math.sin(angle)) * dist, radius)
+			if self:_spawnClearanceOk(pos, radius) then
+				return pos
+			end
+		end
+	end
+	return self:_randomInWorld(Config.World.SpawnPadding)
 end
 
 function GameService:_collectSpawnHosts(state, spawnMode: string?, spawnUserId: number?)
