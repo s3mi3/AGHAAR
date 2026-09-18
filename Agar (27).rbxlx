@@ -5071,7 +5071,7 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 		-- No mouse-driven movement while frozen.
 		speedScale = 0
 	end
-	local moveSpeed = speedForMass(state.mass)
+	local moveSpeed = Config.clusterCappedMoveSpeed(speedForMass(state.mass), self.clusterMaxSpeed)
 	local predictedVelocity = dir * moveSpeed * speedScale
 	if not self.localFrozen then
 		predictedVelocity = Config.balanceClusterVelocity(state.displayPos, self.clusterMoveCenter,
@@ -5401,17 +5401,21 @@ end
 function Renderer:step(dt: number?)
 	dt = dt or 1 / 60
 	-- Snapshot group geometry once before moving any pieces this frame.
-	local weighted, totalMass, count = Vector2.zero, 0, 0
+	local weighted, totalMass, count, maxMass = Vector2.zero, 0, 0, 0
 	for _, cell in self.cellStates do
 		if cell.isOwn and cell.confirmed and not cell.consumeUntil then
 			local mass = math.max(cell.mass or 1, 1)
 			weighted += cell.displayPos * mass
 			totalMass += mass
 			count += 1
+			if mass &gt; maxMass then
+				maxMass = mass
+			end
 		end
 	end
 	self.clusterMoveCenter = if count &gt; 1 then weighted / totalMass else nil
 	self.clusterMoveRadius = math.sqrt(totalMass) * Config.Cell.RadiusScale
+	self.clusterMaxSpeed = if count &gt; 1 and maxMass &gt; 0 then speedForMass(maxMass) else nil
 	self:_stepEntityStates(self.foodStates, dt)
 	self:_stepEntityStates(self.ejectedStates, dt)
 	self:_resolveEjectedVisualCollisions(dt)
@@ -7162,15 +7166,12 @@ Config.Cell = {
 	RSplitGenerations = 3,
 	ESplitGenerations = 2,
 
-	-- Cluster cohesion: keeps a scattered stack of cells grouped up.
-	-- ClusterMaxSpeedRatio caps small cells' speed at (biggest cell's
-	-- speed * ratio) so they can't sprint away from the pack.
-	-- CohesionStrength (0..1) adds a gentle pull only outside the group's
-	-- size-scaled free-spacing zone. 0 disables both pull and outward braking.
-	-- Nearby siblings are never pulled together before their merge cooldown.
-	-- Ratio raised from 1.15 to 1.6 so small cells can catch up to
-	-- the big cell instead of feeling "roped" behind it.
-	ClusterMaxSpeedRatio = 1.6,
+	-- Cluster matching was making split pieces travel as one blob.
+	-- Agar.io lets each cell keep its own mass-based speed, so small
+	-- pieces pull ahead while big ones lag. Ratio &lt;= 1 disables the cap.
+	-- CohesionStrength (0..1) would pull toward the group centroid;
+	-- 0 keeps independent steering with no inward tether.
+	ClusterMaxSpeedRatio = 0,
 	CohesionStrength = 0, -- no automatic inward pull; preserve player-directed spacing
 	ClusterFreeDistance = 260,
 	ClusterFreeRadiusScale = 3,
@@ -7214,8 +7215,19 @@ Config.Cell = {
 function Config.moveSpeedForMass(mass: number): number
 	local player = Config.Player
 	local speed = player.BaseSpeed * (player.InitialMass / math.max(mass, 1)) ^ player.SpeedExponent
-	local maximum = math.min(player.SmallCellMaxSpeed or player.BaseSpeed, player.BaseSpeed)
+	-- SmallCellMaxSpeed is the ceiling for tiny pieces. Using math.min with
+	-- BaseSpeed previously forced every cell to the same top speed, so a
+	-- split blob crawled as one rigid pack instead of stretching out.
+	local maximum = math.max(player.SmallCellMaxSpeed or player.BaseSpeed, player.BaseSpeed)
 	return math.clamp(speed, math.min(player.MinSpeed, maximum), maximum)
+end
+
+function Config.clusterCappedMoveSpeed(speed: number, biggestCellSpeed: number?): number
+	local ratio = Config.Cell.ClusterMaxSpeedRatio
+	if not biggestCellSpeed or typeof(ratio) ~= "number" or ratio &lt;= 1 then
+		return speed
+	end
+	return math.min(speed, biggestCellSpeed * ratio)
 end
 
 function Config.smallCellSplitScale(mass: number): number
@@ -7629,7 +7641,7 @@ Config.Tunables = {
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
 	{ path = "Cell.RecombinePerScaleMass",       label = "Merge sec / ScaleMass",     type = "number", min = 0,    max = 30,    step = 0.1 },
 	{ path = "Cell.MultiSplitFanRadians",        label = "Multi-Split Fan (rad)",     type = "number", min = 0,    max = 1.5,   step = 0.01 },
-	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 1.0,  max = 3,     step = 0.05 },
+	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 0,    max = 10,    step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
 	{ path = "Cell.ClusterFreeDistance",          label = "Free Piece Spacing",        type = "number", min = 100, max = 1500, step = 10 },
 	{ path = "Cell.ClusterOutwardBraking",        label = "Distant Outward Braking",    type = "number", min = 0, max = 1, step = 0.05 },
@@ -11869,11 +11881,8 @@ end
 function GameService:_moveCells(dt: number)
 	local now = os.clock()
 
-	-- Pre-compute per-player cohesion data so cells in many pieces
-	-- naturally group up: cap each cell's max speed at the biggest
-	-- owned cell's speed * ClusterMaxSpeedRatio, and optionally add
-	-- a gentle pull toward the group centroid. Small cells can no
-	-- longer sprint away from the pack.
+	-- Optional pack matching only. Ratio &lt;= 1 leaves each cell on its
+	-- own mass-based speed so split pieces can stretch apart.
 	local playerBaseSpeed = self.moveBaseSpeedScratch or {}
 	local playerCentroid = self.moveCentroidScratch or {}
 	local playerHighMassDecayFraction = self.moveDecayScratch or {}
@@ -11883,7 +11892,7 @@ function GameService:_moveCells(dt: number)
 	table.clear(playerBaseSpeed)
 	table.clear(playerCentroid)
 	table.clear(playerHighMassDecayFraction)
-	local clusterRatio = math.max(Config.Cell.ClusterMaxSpeedRatio or 1, 1)
+	local clusterRatio = Config.Cell.ClusterMaxSpeedRatio or 0
 	local cohesion = math.clamp(Config.Cell.CohesionStrength or 0, 0, 1)
 	local highDecayStartMass = math.max(Config.Player.HighMassDecayStartMass or math.huge, 1)
 	local highDecayStartRate = math.max(Config.Player.HighMassDecayStartPerSecond or 0, 0)
@@ -11912,9 +11921,8 @@ function GameService:_moveCells(dt: number)
 				end
 			end
 		end
-		if maxMass &gt; 0 and #state.cells &gt; 1 then
-			local bigSpeed = Config.moveSpeedForMass(maxMass)
-			playerBaseSpeed[userId] = bigSpeed
+		if clusterRatio &gt; 1 and maxMass &gt; 0 and #state.cells &gt; 1 then
+			playerBaseSpeed[userId] = Config.moveSpeedForMass(maxMass)
 		end
 		if cohesion &gt; 0 and totalMass &gt; 0 and #state.cells &gt; 1 then
 			playerCentroid[userId] = Vector2.new(cx / totalMass, cy / totalMass)
@@ -11945,13 +11953,10 @@ function GameService:_moveCells(dt: number)
 		end
 		local moveStart = cell.sweptEatStartPos or cell.pos
 		local dir, speedScale = self:_cellMoveVector(cell.owner, cell)
-		local speed = Config.moveSpeedForMass(cell.mass)
-
-		-- Cluster speed cap: keep small pieces from outrunning the pack.
-		local bigSpeed = playerBaseSpeed[cell.ownerUserId]
-		if bigSpeed and speed &gt; bigSpeed * clusterRatio then
-			speed = bigSpeed * clusterRatio
-		end
+		local speed = Config.clusterCappedMoveSpeed(
+			Config.moveSpeedForMass(cell.mass),
+			playerBaseSpeed[cell.ownerUserId]
+		)
 
 		local steering = Config.balanceClusterVelocity(cell.pos, playerCentroid[cell.ownerUserId],
 			ownerState and ownerState.clusterMoveRadius or 0, dir * speed * speedScale, speed)
