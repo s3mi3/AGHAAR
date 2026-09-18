@@ -2215,6 +2215,7 @@ local function resetFrame(frame: Frame, parts)
 	frame.BackgroundTransparency = 0
 	frame.Position = UDim2.fromOffset(-100000, -100000)
 	frame.Size = UDim2.fromOffset(1, 1)
+	frame.Rotation = 0
 	parts.lastZIndex = nil
 
 	if parts.frameCorner then
@@ -2223,6 +2224,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.skin then
 		parts.skin.Visible = false
+		parts.skin.Rotation = 0
 		parts.skin.Image = ""
 		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.skin.ImageTransparency = 0
@@ -2235,6 +2237,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.avatar then
 		parts.avatar.Visible = false
+		parts.avatar.Rotation = 0
 		parts.avatar.Image = ""
 		parts.avatar.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.avatar.ImageTransparency = 0
@@ -2248,6 +2251,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.labelStack then
 		parts.labelStack.Visible = false
+		parts.labelStack.Rotation = 0
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
@@ -2441,6 +2445,8 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	frame.Position = UDim2.fromOffset(x, y)
 	frame.Size = UDim2.fromOffset(width, height)
+	local rotation = options and options.rotation or 0
+	setCached(parts, "frameRotation", frame, "Rotation", rotation)
 
 	if parts.stroke then
 		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
@@ -2460,6 +2466,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 
 	if options then
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", -rotation)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -2472,6 +2479,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", -rotation)
 			local overlayScale = options.overlayScale or 1
 			local overlaySize = if overlayScale &lt; 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
@@ -2493,6 +2501,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", -rotation)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius &gt;= 18)
 			if parts.nameLabel then
 				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
@@ -2503,12 +2512,14 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 	else
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
 			setCached(parts, "skinVisible", parts.skin, "Visible", false)
 			setCached(parts, "skinImage", parts.skin, "Image", "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
 			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", 0)
 		end
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
 			setCached(parts, "avatarImage", parts.avatar, "Image", "")
 			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", Color3.fromRGB(255, 255, 255))
@@ -2516,6 +2527,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", Enum.ScaleType.Crop)
 		end
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
 		end
 	end
@@ -5417,6 +5429,66 @@ function Renderer:_updateHud(dt: number)
 	end
 end
 
+function Renderer:_applyLiquidBlobAnimation(id: number, state, screenRadius: number, drawOptions, dt: number)
+	local renderConfig = Config.Render
+	if renderConfig.LiquidBlobEnabled == false
+		or screenRadius &lt; math.max(renderConfig.LiquidBlobMinPixels or 9, 1)
+	then
+		drawOptions.width = nil
+		drawOptions.height = nil
+		drawOptions.rotation = nil
+		state.liquidLastPos = state.displayPos
+		state.liquidVelocity = Vector2.zero
+		state.liquidStretch = 0
+		return
+	end
+
+	local safeDt = math.max(dt, 1 / 240)
+	local rawVelocity = Vector2.zero
+	if state.liquidLastPos then
+		local offset = state.displayPos - state.liquidLastPos
+		-- Snapshot corrections and teleports should not create a one-frame
+		-- spike that makes the blob look like a needle.
+		if offset.Magnitude &lt;= math.max(state.radius * 4, 80) then
+			rawVelocity = offset / safeDt
+		end
+	end
+	state.liquidLastPos = state.displayPos
+
+	local sharpness = math.max(renderConfig.LiquidBlobSharpness or 9, 0.01)
+	local alpha = 1 - math.exp(-safeDt * sharpness)
+	state.liquidVelocity = (state.liquidVelocity or rawVelocity):Lerp(rawVelocity, alpha)
+	local velocity = state.liquidVelocity
+	local speed = velocity.Magnitude
+	local speedReference = math.max(renderConfig.LiquidBlobSpeedForMaxStretch or 500, 1)
+	local moveStretch = math.max(renderConfig.LiquidBlobMoveStretch or 0.075, 0)
+		* math.clamp(speed / speedReference, 0, 1)
+
+	local wobbleHz = math.max(renderConfig.LiquidBlobWobbleHz or 0.7, 0)
+	local phase = os.clock() * wobbleHz * math.pi * 2 + id * 2.399
+	local idleStretch = math.max(renderConfig.LiquidBlobIdleStretch or 0.025, 0)
+		* (0.55 + math.sin(phase) * 0.45)
+	local targetStretch = moveStretch + idleStretch
+	state.liquidStretch = (state.liquidStretch or 0) + (targetStretch - (state.liquidStretch or 0)) * alpha
+
+	local desiredRotation
+	if speed &gt; 3 then
+		desiredRotation = math.deg(math.atan(velocity.Y, velocity.X))
+	else
+		desiredRotation = math.deg(phase * 0.35)
+	end
+	local currentRotation = state.liquidRotation or desiredRotation
+	local rotationDelta = (desiredRotation - currentRotation + 180) % 360 - 180
+	state.liquidRotation = currentRotation + rotationDelta * alpha
+
+	-- Preserve approximate area while stretching along one axis.
+	local axisScale = 1 + math.max(state.liquidStretch, 0)
+	local diameter = screenRadius * 2
+	drawOptions.width = diameter * axisScale
+	drawOptions.height = diameter / axisScale
+	drawOptions.rotation = state.liquidRotation
+end
+
 function Renderer:render(dt: number?)
 	dt = dt or 1 / 60
 	self:_drawGrid()
@@ -5526,6 +5598,7 @@ function Renderer:render(dt: number?)
 				drawOptions.image = avatarImage
 				drawOptions.imageScaleType = avatarScaleType
 			end
+			self:_applyLiquidBlobAnimation(id, state, screenRadius, drawOptions, dt)
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
 	end
@@ -7239,6 +7312,15 @@ Config.Render = {
 	OwnCellVisualSeparationPasses = 2,
 	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
+	-- Client-only liquid blob deformation. Motion produces a soft stretch
+	-- while a low-amplitude idle wobble keeps stationary cells organic.
+	LiquidBlobEnabled = true,
+	LiquidBlobIdleStretch = 0.025,
+	LiquidBlobMoveStretch = 0.075,
+	LiquidBlobSpeedForMaxStretch = 500,
+	LiquidBlobWobbleHz = 0.7,
+	LiquidBlobSharpness = 9,
+	LiquidBlobMinPixels = 9,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,

@@ -448,6 +448,15 @@ Config.Render = {
 	OwnCellVisualSeparationPasses = 2,
 	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
+	-- Client-only liquid blob deformation. Motion produces a soft stretch
+	-- while a low-amplitude idle wobble keeps stationary cells organic.
+	LiquidBlobEnabled = true,
+	LiquidBlobIdleStretch = 0.025,
+	LiquidBlobMoveStretch = 0.075,
+	LiquidBlobSpeedForMaxStretch = 500,
+	LiquidBlobWobbleHz = 0.7,
+	LiquidBlobSharpness = 9,
+	LiquidBlobMinPixels = 9,
 	OwnBarrierPredictionPasses = 2,
 	MobileJoystickSmoothingSharpness = 32,
 	FoodZIndex = 3,

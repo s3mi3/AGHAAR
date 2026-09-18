@@ -57,6 +57,7 @@ local function resetFrame(frame: Frame, parts)
 	frame.BackgroundTransparency = 0
 	frame.Position = UDim2.fromOffset(-100000, -100000)
 	frame.Size = UDim2.fromOffset(1, 1)
+	frame.Rotation = 0
 	parts.lastZIndex = nil
 
 	if parts.frameCorner then
@@ -65,6 +66,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.skin then
 		parts.skin.Visible = false
+		parts.skin.Rotation = 0
 		parts.skin.Image = ""
 		parts.skin.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.skin.ImageTransparency = 0
@@ -77,6 +79,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.avatar then
 		parts.avatar.Visible = false
+		parts.avatar.Rotation = 0
 		parts.avatar.Image = ""
 		parts.avatar.ImageColor3 = Color3.fromRGB(255, 255, 255)
 		parts.avatar.ImageTransparency = 0
@@ -90,6 +93,7 @@ local function resetFrame(frame: Frame, parts)
 
 	if parts.labelStack then
 		parts.labelStack.Visible = false
+		parts.labelStack.Rotation = 0
 	end
 	if parts.serrations then
 		for _, tooth in parts.serrations do
@@ -283,6 +287,8 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	frame.Position = UDim2.fromOffset(x, y)
 	frame.Size = UDim2.fromOffset(width, height)
+	local rotation = options and options.rotation or 0
+	setCached(parts, "frameRotation", frame, "Rotation", rotation)
 
 	if parts.stroke then
 		setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
@@ -302,6 +308,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 
 	if options then
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", -rotation)
 			setCached(parts, "skinVisible", parts.skin, "Visible", options.baseImage ~= nil)
 			setCached(parts, "skinImage", parts.skin, "Image", options.baseImage or "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", options.baseImageColor or Color3.fromRGB(255, 255, 255))
@@ -314,6 +321,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", -rotation)
 			local overlayScale = options.overlayScale or 1
 			local overlaySize = if overlayScale < 1 then math.max(math.floor(math.min(width, height) * overlayScale + 0.5), 1) else nil
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", options.image ~= nil)
@@ -335,6 +343,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", -rotation)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", radius >= 18)
 			if parts.nameLabel then
 				setCached(parts, "nameText", parts.nameLabel, "Text", options.name or "")
@@ -345,12 +354,14 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 		end
 	else
 		if parts.skin then
+			setCached(parts, "skinRotation", parts.skin, "Rotation", 0)
 			setCached(parts, "skinVisible", parts.skin, "Visible", false)
 			setCached(parts, "skinImage", parts.skin, "Image", "")
 			setCached(parts, "skinColor", parts.skin, "ImageColor3", Color3.fromRGB(255, 255, 255))
 			setCached(parts, "skinTransparency", parts.skin, "ImageTransparency", 0)
 		end
 		if parts.avatar then
+			setCached(parts, "avatarRotation", parts.avatar, "Rotation", 0)
 			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
 			setCached(parts, "avatarImage", parts.avatar, "Image", "")
 			setCached(parts, "avatarColor", parts.avatar, "ImageColor3", Color3.fromRGB(255, 255, 255))
@@ -358,6 +369,7 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 			setCached(parts, "avatarScaleType", parts.avatar, "ScaleType", Enum.ScaleType.Crop)
 		end
 		if parts.labelStack then
+			setCached(parts, "labelRotation", parts.labelStack, "Rotation", 0)
 			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
 		end
 	end
