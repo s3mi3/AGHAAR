@@ -3722,7 +3722,7 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		thumbnailCache = {},
 		ownEatCandidatesScratch = {},
 		localMoveTarget = nil,
-		localMoveAim = Vector2.new(1, 0),
+		localMoveAim = nil,
 		predictedOwnCenter = nil,
 		-- Set by InputController when the player toggles freeze. While
 		-- true, own-cell prediction stops advancing displayPos toward the
@@ -3731,7 +3731,6 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		localFrozen = false,
 		lastOwnCellCount = 0,
 		ownMoveCellCount = 0,
-		localMoveAim = nil,
 		ownSeparationScratch = {},
 		ejectedCollisionScratch = {},
 		hudAccumulator = 0,
@@ -7084,14 +7083,6 @@ Config.Player = {
 	MovementDeadZoneRadiusScale = 0.35,
 	MovementSlowDistance = 90,
 	MovementSlowRadiusScale = 1.2,
-	-- Split pieces should gather like Agar.io, not lock into a rigid
-	-- formation and not vacuum into one point. SharedMultiCellSteering
-	-- mixes a shared aim with a little per-cell homing (GatherBlend) and
-	-- lets trailers catch up (GatherSpeedBlend). 0 blend = parallel only;
-	-- 1 blend = the old everyone-homes-to-cursor clump.
-	SharedMultiCellSteering = true,
-	GatherBlend = 0.4,
-	GatherSpeedBlend = 0.7,
 	SpawnerBiasChance = 0.85,
 	SpawnerBiasMinDistance = 240,
 	SpawnerBiasMaxDistance = 760,
@@ -7225,79 +7216,36 @@ function Config.clusterCappedMoveSpeed(speed: number, biggestCellSpeed: number?)
 	return math.min(speed, biggestCellSpeed * ratio)
 end
 
--- One steering rule for server sim and client prediction.
--- One cell: classic homing toward the cursor, with a per-cell deadzone.
--- Multiple cells: mostly shared aim so the blob does not vacuum into the
--- cursor, plus a little per-cell homing and trailer catch-up so pieces
--- naturally gather. Nearby small outliers can still close on each other
--- and merge as a pair before the big cell arrives.
-function Config.moveVector(target: Vector2?, aim: Vector2?, pos: Vector2, radius: number, origin: Vector2?, ownCellCount: number)
-	local fallbackAim = Vector2.new(1, 0)
-	if typeof(aim) == "Vector2" and aim.Magnitude &gt; 0.001 then
-		fallbackAim = aim.Unit
-	end
+-- Each cell steers at the cursor and slows/stops in its own deadzone.
+-- Shared-aim steering made pieces keep the camera direction even after
+-- they reached the mouse, so they floated past it. Mass-based speed and
+-- sibling push still keep a split group from melting into one blob.
+function Config.moveVector(target: Vector2?, aim: Vector2?, pos: Vector2, radius: number, _origin: Vector2?, _ownCellCount: number)
 	if typeof(target) ~= "Vector2" then
-		return fallbackAim, 1
-	end
-
-	local homeOffset = target - pos
-	local homeDist = homeOffset.Magnitude
-	local singleCell = (ownCellCount or 1) &lt;= 1 or Config.Player.SharedMultiCellSteering == false
-	if singleCell then
-		local deadZone = math.max(
-			Config.Player.MovementDeadZone or 10,
-			radius * (Config.Player.MovementDeadZoneRadiusScale or 0)
-		)
-		if homeDist &lt;= deadZone then
-			return Vector2.zero, 0
+		if typeof(aim) == "Vector2" and aim.Magnitude &gt; 0.001 then
+			return aim.Unit, 1
 		end
-		local slowDistance = math.max(
-			Config.Player.MovementSlowDistance or 90,
-			radius * (Config.Player.MovementSlowRadiusScale or 0)
-		)
-		local speedScale = math.clamp((homeDist - deadZone) / slowDistance, 0, 1)
-		if speedScale &lt; 0.02 then
-			return Vector2.zero, 0
-		end
-		return homeOffset / homeDist, speedScale
-	end
-
-	local groupOrigin = if typeof(origin) == "Vector2" then origin else pos
-	local groupOffset = target - groupOrigin
-	local groupDist = groupOffset.Magnitude
-	local deadZone = math.max(Config.Player.MovementDeadZone or 10, 0)
-	local slowDistance = math.max(Config.Player.MovementSlowDistance or 90, 1)
-	local function scaleFor(distance: number): number
-		if distance &lt;= deadZone then
-			return 0
-		end
-		local scale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
-		if scale &lt; 0.02 then
-			return 0
-		end
-		return scale
-	end
-
-	local speedBlend = math.clamp(Config.Player.GatherSpeedBlend or 0.7, 0, 1)
-	local speedScale = scaleFor(homeDist) * speedBlend + scaleFor(groupDist) * (1 - speedBlend)
-	if speedScale &lt; 0.02 then
 		return Vector2.zero, 0
 	end
 
-	local sharedDir = fallbackAim
-	if groupDist &gt; 0.001 then
-		sharedDir = groupOffset / groupDist
+	local offset = target - pos
+	local distance = offset.Magnitude
+	local deadZone = math.max(
+		Config.Player.MovementDeadZone or 10,
+		radius * (Config.Player.MovementDeadZoneRadiusScale or 0)
+	)
+	if distance &lt;= deadZone then
+		return Vector2.zero, 0
 	end
-	if typeof(aim) == "Vector2" and aim.Magnitude &gt; 0.001 then
-		sharedDir = aim.Unit
+	local slowDistance = math.max(
+		Config.Player.MovementSlowDistance or 90,
+		radius * (Config.Player.MovementSlowRadiusScale or 0)
+	)
+	local speedScale = math.clamp((distance - deadZone) / slowDistance, 0, 1)
+	if speedScale &lt; 0.02 then
+		return Vector2.zero, 0
 	end
-	local homeDir = if homeDist &gt; 0.001 then homeOffset / homeDist else sharedDir
-	local gather = math.clamp(Config.Player.GatherBlend or 0.4, 0, 1)
-	local mixed = sharedDir:Lerp(homeDir, gather)
-	if mixed.Magnitude &gt; 0.001 then
-		return mixed.Unit, speedScale
-	end
-	return sharedDir, speedScale
+	return offset / distance, speedScale
 end
 
 function Config.smallCellSplitScale(mass: number): number
@@ -7731,9 +7679,6 @@ Config.Tunables = {
 	{ path = "Player.HighMassDecayReferenceMass", label = "High Decay Reference Mass", type = "number", min = 1000, max = 10000000, step = 1000 },
 	{ path = "Player.HighMassDecayReferencePerSecond", label = "Decay at Reference / s", type = "number", min = 0, max = 1000000, step = 100 },
 	{ path = "Player.SpawnInvulnSeconds",        label = "Spawn Invuln (s)",          type = "number", min = 0,    max = 10,    step = 0.1 },
-	{ path = "Player.SharedMultiCellSteering",   label = "Parallel Split Steering",   type = "bool" },
-	{ path = "Player.GatherBlend",               label = "Split Gather Blend",        type = "number", min = 0,    max = 1,     step = 0.05 },
-	{ path = "Player.GatherSpeedBlend",          label = "Trailer Catch-Up",          type = "number", min = 0,    max = 1,     step = 0.05 },
 	{ path = "Cell.SamePlayerPushSpeed",         label = "Own-Cell Push Speed",       type = "number", min = 0,    max = 2000,  step = 10 },
 	{ path = "Cell.SamePlayerPushStrength",      label = "Own-Cell Push Strength",    type = "number", min = 0,    max = 1,     step = 0.05 },
 
