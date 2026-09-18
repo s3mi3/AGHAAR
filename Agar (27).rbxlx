@@ -9962,7 +9962,7 @@ Config.Render = {
 	ConsumeAnimationSharpness = 18,
 	ConsumeFadeSeconds = 0.16,
 	-- Sibling swallow: the eaten cell rides the eater.
-	MergeAnimationSeconds = 2.2,
+	MergeAnimationSeconds = 1.0,
 	MergePullStart = 0.06,
 	MergeShrinkStart = 0.34,
 	StaticCachePaddingPixels = 140,
