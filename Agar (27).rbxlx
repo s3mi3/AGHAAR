@@ -4304,10 +4304,14 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartedAt = now
 			state.consumeUntil = now + duration
 			state.consumeStartPos = state.displayPos
+			state.consumeStartOffset = state.displayPos - (bestTarget.displayPos or bestTarget.targetPos)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
 			if isMerge then
+				bestTarget.mergeGrowthStartRadius = bestTarget.radius
+				bestTarget.mergeGrowthStartedAt = now
 				bestTarget.mergeGrowthUntil = now + duration
+				self:_exciteLiquidEdge(bestTarget, now, 0.8)
 			end
 			state.extrapolate = false
 			state.isOwn = false
@@ -4971,12 +4975,22 @@ end
 function Renderer:_stepCellRadius(state, dt: number)
 	local target = state.targetRadius or state.radius
 	local current = state.radius
+	local now = os.clock()
+	local mergeUntil = state.mergeGrowthUntil or 0
+	if mergeUntil &gt; now and typeof(state.mergeGrowthStartRadius) == "number" then
+		local started = state.mergeGrowthStartedAt or (mergeUntil - (Config.Render.MergeAnimationSeconds or 2.2))
+		local duration = math.max(mergeUntil - started, 0.01)
+		local progress = math.clamp((now - started) / duration, 0, 1)
+		local growStart = math.clamp(Config.Render.MergeGrowStart or 0.2, 0, 0.75)
+		local t = math.clamp((progress - growStart) / math.max(1 - growStart, 0.01), 0, 1)
+		t = t * t * t * (t * (t * 6 - 15) + 10)
+		state.radius = state.mergeGrowthStartRadius + (target - state.mergeGrowthStartRadius) * t
+		state.radiusVelocity = 0
+		return
+	end
 	local growing = target &gt; current
 	local sharpness = math.max(if growing then Config.Render.CellGrowthSharpness or 11
 		else Config.Render.CellShrinkSharpness or 24, 0.1)
-	if growing and (state.mergeGrowthUntil or 0) &gt; os.clock() then
-		sharpness = math.max(Config.Render.MergeGrowthSharpness or 5, 0.1)
-	end
 	local velocity = state.radiusVelocity or 0
 	-- A split/decay reverses growth without a one-frame outward kick.
 	if (growing and velocity &lt; 0) or (not growing and velocity &gt; 0) then velocity = 0 end
@@ -5106,11 +5120,22 @@ function Renderer:_stepEntityStates(states, dt: number)
 			local target = state.consumeTarget
 			local targetPos = target and (target.displayPos or target.targetPos) or state.targetPos
 			if state.consumeIsMerge then
-				local easedProgress = progress ^ 3 * (progress * (progress * 6 - 15) + 10)
-				local startPos = state.consumeStartPos or state.displayPos
-				state.displayPos = startPos:Lerp(targetPos, easedProgress)
-				-- Ease away area rather than collapsing the radius immediately.
-				state.radius = math.max((state.consumeStartRadius or state.radius) * math.sqrt(1 - easedProgress), 0)
+				local pullStart = math.clamp(Config.Render.MergePullStart or 0.06, 0, 0.45)
+				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
+				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
+				local shrinkT = math.clamp((progress - shrinkStart) / math.max(1 - shrinkStart, 0.01), 0, 1)
+				local pull = pullT * pullT * pullT * (pullT * (pullT * 6 - 15) + 10)
+				local shrink = shrinkT * shrinkT * shrinkT * (shrinkT * (shrinkT * 6 - 15) + 10)
+				local offset = state.consumeStartOffset
+				if typeof(offset) ~= "Vector2" then
+					local startPos = state.consumeStartPos or state.displayPos
+					offset = startPos - targetPos
+				end
+				-- Ride with the eater and slide into its center, instead of
+				-- tweening from a stale world point while the blob moves.
+				state.displayPos = targetPos + offset * (1 - pull)
+				local startRadius = state.consumeStartRadius or state.radius
+				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
@@ -5723,7 +5748,10 @@ function Renderer:render(dt: number?)
 			local drawOptions = state.drawOptions or {}
 			state.drawOptions = drawOptions
 			drawOptions.name = name
-			if state.labelMass ~= state.mass or drawOptions.score == nil then
+			if state.consumeIsMerge then
+				drawOptions.name = ""
+				drawOptions.score = ""
+			elseif state.labelMass ~= state.mass or drawOptions.score == nil then
 				state.labelMass = state.mass
 				drawOptions.score = state.mass and displayScore(state.mass) or ""
 			end
@@ -7616,8 +7644,14 @@ Config.Render = {
 	SplitSpawnAnimationRadiusScale = 4.5,
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
-	MergeAnimationSeconds = 1.05,
-	MergeGrowthSharpness = 5,
+	-- Sibling swallow: long enough to read as a merge, not a pop.
+	-- The eaten cell rides the eater and stays full-size, then pours in
+	-- while the eater grows over the same window.
+	MergeAnimationSeconds = 2.2,
+	MergePullStart = 0.06,
+	MergeShrinkStart = 0.34,
+	MergeGrowStart = 0.2,
+	MergeGrowthSharpness = 2.4,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -7659,6 +7693,7 @@ Config.Tunables = {
 	{ path = "Cell.RecombineMinSeconds",         label = "Merge Cooldown Min (s)",    type = "number", min = 0.1,  max = 15,    step = 0.1 },
 	{ path = "Cell.RecombineMaxSeconds",         label = "Merge Cooldown Max (s)",    type = "number", min = 0.5,  max = 60,    step = 0.5 },
 	{ path = "Cell.RecombinePerScaleMass",       label = "Merge sec / ScaleMass",     type = "number", min = 0,    max = 30,    step = 0.1 },
+	{ path = "Render.MergeAnimationSeconds",     label = "Merge Swallow (s)",         type = "number", min = 0.4,  max = 4,     step = 0.05 },
 	{ path = "Cell.MultiSplitFanRadians",        label = "Multi-Split Fan (rad)",     type = "number", min = 0,    max = 1.5,   step = 0.01 },
 	{ path = "Cell.ClusterMaxSpeedRatio",        label = "Cluster Max Speed Ratio",   type = "number", min = 0,    max = 10,    step = 0.05 },
 	{ path = "Cell.CohesionStrength",            label = "Cohesion Strength",         type = "number", min = 0,    max = 1,     step = 0.01 },
