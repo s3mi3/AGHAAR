@@ -7503,6 +7503,8 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 		skinPreviews = {},
 		social = {
 			playing = false,
+			spectating = false,
+			spectateName = "",
 			spectateUnlockIn = 0,
 			spawnNearEnabled = true,
 			friends = {},
@@ -8286,10 +8288,6 @@ function MainMenu:_fire(payload)
 end
 
 function MainMenu:_play()
-	if self.social.playing then
-		self:setOpen(false)
-		return
-	end
 	self:_fire({
 		action = "play",
 		spawnNear = self.social.spawnNearEnabled == true,
@@ -8389,6 +8387,12 @@ function MainMenu:handleUpdate(payload)
 		if typeof(payload.playing) == "boolean" then
 			self.social.playing = payload.playing
 		end
+		if typeof(payload.spectating) == "boolean" then
+			self.social.spectating = payload.spectating
+		end
+		if typeof(payload.spectateName) == "string" then
+			self.social.spectateName = payload.spectateName
+		end
 		if typeof(payload.spectateUnlockIn) == "number" then
 			self.social.spectateUnlockIn = payload.spectateUnlockIn
 			self.spectateUnlockAt = os.clock() + payload.spectateUnlockIn
@@ -8478,7 +8482,11 @@ function MainMenu:handleUpdate(payload)
 			self.renderer:setSocialWorld(self.social)
 		end
 		if payload.kind == "hello" then
-			self:setOpen(payload.playing ~= true)
+			if payload.keepMenuClosed == true then
+				self:setOpen(false)
+			else
+				self:setOpen(payload.playing ~= true)
+			end
 		end
 		self:_refreshAll()
 	end
@@ -8586,7 +8594,9 @@ function MainMenu:_refreshLockLabel()
 		self.spectateButton.Active = false
 		self.spectateButton.AutoButtonColor = false
 	else
-		self.lockLabel.Text = if self.social.playing then "Spectate leaves the map and drops your mass." else "Spectating"
+		self.lockLabel.Text = if self.social.playing then "Spectate leaves the map and drops your mass."
+			elseif typeof(self.social.spectateName) == "string" and self.social.spectateName ~= "" then "Watching " .. self.social.spectateName
+			else "Spectating"
 		self.spectateButton.Active = true
 		self.spectateButton.AutoButtonColor = true
 	end
@@ -12336,6 +12346,8 @@ function GameService:_addPlayer(player: Player)
 		gridColor = nil,
 		socialMessage = nil,
 		unfreezeSpringSpent = false,
+		spectateTargetId = nil,
+		lastEatenBy = nil,
 	}
 
 	self.playersByUserId[player.UserId] = state
@@ -15716,6 +15728,12 @@ function GameService:_applyEatEvent(event)
 				event.sweepStartPos, event.sweepEndPos)
 		end
 		if target and target.id ~= cell.id and canEat then
+			if cell.ownerUserId ~= target.ownerUserId then
+				local victim = self.playersByUserId[target.ownerUserId]
+				if victim then
+					victim.lastEatenBy = cell.ownerUserId
+				end
+			end
 			self:_setCellMass(cell, cell.mass + target.mass)
 			self:_removeCell(target, cell.id)
 		end
@@ -15948,6 +15966,7 @@ function GameService:_updatePlayerCenters()
 				self:_sendSocial(state, { kind = "hello" })
 				self:_broadcastSocial()
 			end
+			self:_followSpectateTarget(state)
 		else
 			state.center = weighted / totalMass
 		end
@@ -15955,6 +15974,7 @@ function GameService:_updatePlayerCenters()
 end
 
 function GameService:_snapshotRadius(state): number
+	local viewState = self:_spectateViewState(state) or state
 	local view = state.input.view
 	local zoom = math.clamp(state.input.zoom or 1, Config.Render.MinZoom or 0.08, Config.Render.MaxZoom or 24)
 	local maxView = math.max(view.X, view.Y) / zoom
@@ -15970,7 +15990,7 @@ function GameService:_snapshotRadius(state): number
 	end
 
 	local totalRadius = 0
-	for _, id in state.cells do
+	for _, id in viewState.cells or {} do
 		local cell = self.cells[id]
 		if cell then
 			totalRadius += cell.radius
@@ -16629,7 +16649,8 @@ function GameService:_sendSnapshots(includeStatics: boolean?)
 			continue
 		end
 		local radius = self:_snapshotRadius(state)
-		local center = state.center
+		local viewState = self:_spectateViewState(state)
+		local center = (viewState and viewState.center) or state.center or Vector2.zero
 		local cellsPayload = {}
 		local ejectedPayload = {}
 		local ejectedOverflowPayload = nil
@@ -16764,7 +16785,7 @@ function GameService:_sendSnapshots(includeStatics: boolean?)
 				k = "d",
 				y = state.userId,
 				c = { round(center.X, precision), round(center.Y, precision) },
-				sr = round(self:_playerRadiusSum(state), Config.Network.MassPrecision),
+				sr = round(self:_playerRadiusSum(viewState or state), Config.Network.MassPrecision),
 				co = self:_packOwnCellBuffer(cellsPayload, state.userId),
 				cr = self:_packRemoteCellBuffer(cellsPayload, state.userId),
 				ej = self:_packEjectedBuffer(ejectedPayload),
@@ -17007,10 +17028,13 @@ function GameService:_socialPayload(state)
 		}
 	end
 
+	local spectateTarget = self:_resolveSpectateTarget(state)
 	local now = os.clock()
 	return {
 		kind = "social",
 		playing = state.playing == true and self:_isPlaying(state),
+		spectating = not self:_isPlaying(state),
+		spectateName = spectateTarget and self:_displayNameForState(spectateTarget) or "",
 		spectateUnlockIn = math.max((state.spectateUnlockAt or 0) - now, 0),
 		spawnNearEnabled = state.spawnNearEnabled ~= false,
 		minimapEnabled = state.minimapEnabled ~= false,
@@ -17095,6 +17119,54 @@ function GameService:_clearCells(state)
 	end
 end
 
+function GameService:_resolveSpectateTarget(state)
+	if not state or self:_isPlaying(state) then
+		return nil
+	end
+	local function usable(other): boolean
+		return other ~= nil and other.userId ~= state.userId and self:_isPlaying(other)
+	end
+	local current = state.spectateTargetId and self.playersByUserId[state.spectateTargetId]
+	if usable(current) then
+		return current
+	end
+	local eater = state.lastEatenBy and self.playersByUserId[state.lastEatenBy]
+	if usable(eater) then
+		state.spectateTargetId = eater.userId
+		return eater
+	end
+	local best = nil
+	local bestMass = -1
+	for _, other in self.playersByUserId do
+		if usable(other) then
+			local mass = self:_playerMass(other)
+			if mass &gt; bestMass then
+				best = other
+				bestMass = mass
+			end
+		end
+	end
+	state.spectateTargetId = best and best.userId or nil
+	return best
+end
+
+function GameService:_spectateViewState(state)
+	if self:_isPlaying(state) then
+		return state
+	end
+	return self:_resolveSpectateTarget(state)
+end
+
+function GameService:_followSpectateTarget(state)
+	if not state or self:_isPlaying(state) then
+		return
+	end
+	local target = self:_resolveSpectateTarget(state)
+	if target and target.center then
+		state.center = target.center
+	end
+end
+
 function GameService:_enterSpectate(state, force: boolean?): boolean
 	if not state then
 		return false
@@ -17112,6 +17184,7 @@ function GameService:_enterSpectate(state, force: boolean?): boolean
 	self:_clearCells(state)
 	state.playing = false
 	state.frozen = false
+	self:_followSpectateTarget(state)
 	return true
 end
 
@@ -17199,11 +17272,7 @@ end
 
 function GameService:_playPlayer(state, spawnNear: boolean?, spawnMode: string?, spawnUserId: number?)
 	if self:_isPlaying(state) then
-		state.socialMessage = "You are already in the map"
-		self:_sendSocial(state)
-		return
-	end
-	if not self:_rateOk(state, "play", 0.8) then
+		self:_sendSocial(state, { kind = "hello" })
 		return
 	end
 	self:_clearCells(state)
@@ -17260,6 +17329,7 @@ function GameService:_playPlayer(state, spawnNear: boolean?, spawnMode: string?,
 	state.ejectCycleOffset = 0
 	state.frozen = false
 	state.unfreezeSpringSpent = false
+	state.spectateTargetId = nil
 	self:_spawnPlayerCell(state, pos, startMassForLevel(state.accountLevel), Vector2.zero)
 	state.needsStaticSnapshot = true
 	self:_sendSocial(state, { kind = "hello" })
@@ -17279,9 +17349,14 @@ function GameService:_handleSocialAction(player: Player, payload)
 		self:_playPlayer(state, payload.spawnNear, payload.spawnMode, targetId)
 		return
 	elseif action == "spectate" then
-		if self:_enterSpectate(state, false) then
-			self:_sendSocial(state, { kind = "hello" })
-			self:_broadcastSocial()
+		if self:_isPlaying(state) then
+			if self:_enterSpectate(state, false) then
+				self:_sendSocial(state, { kind = "hello", keepMenuClosed = true })
+				self:_broadcastSocial()
+			end
+		else
+			self:_followSpectateTarget(state)
+			self:_sendSocial(state, { kind = "hello", keepMenuClosed = true })
 		end
 		return
 	elseif action == "menuOpen" then
