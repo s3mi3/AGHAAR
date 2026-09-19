@@ -9728,6 +9728,8 @@ Config.Cell = {
 	FrozenSplitLineFatnessScale = 0.28,
 	FrozenSplitLineStepRadiusScale = 0.12,
 	FrozenSplitSettleSpeed = 240,
+	FrozenSplitSettleSeconds = 0.45,
+	FrozenFeedPauseSettleSeconds = 0.25,
 	FrozenMergePullSpeed = 520,
 	FrozenMergePullRangeScale = 12,
 	FrozenMergeTargetOverlap = 0.1,
@@ -14482,8 +14484,12 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 		end
 	end
 	-- Frozen pieces peel from the parent by FrozenSplitNudgeRadiusScale.
-	-- The parked line is settled over time in _moveCells so the stack
-	-- does not teleport onto even slots.
+	-- The parked line is settled over a short window in _moveCells so
+	-- the stack does not teleport onto even slots. Feeding after that
+	-- must not keep dragging the line around.
+	if state.frozen and #state.cells &gt; startCount then
+		self:_armFrozenSplitSettle(state)
+	end
 end
 
 function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAim: Vector2?)
@@ -14497,6 +14503,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAi
 	if #cells == 0 then
 		return
 	end
+	local startCount = #state.cells
 
 	for _, cell in cells do
 		local freeSlots = Config.Player.MaxCells - #state.cells
@@ -14567,6 +14574,9 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAi
 				child.splitParentId = cell.id
 			end
 		end
+	end
+	if state.frozen and #state.cells &gt; startCount then
+		self:_armFrozenSplitSettle(state)
 	end
 end
 
@@ -14709,14 +14719,28 @@ function GameService:_frozenCellMergeReady(cell, now: number): boolean
 end
 
 function GameService:_updateFrozenParkedCells(state, dt: number)
-	-- Frozen cells do not follow the mouse. They only ease a fresh
-	-- freeze-split into a short line, then pull merge-ready leftovers
-	-- together so the last two blobs can finish combining.
+	-- Frozen cells do not follow the mouse. A fresh freeze-split eases
+	-- into a short line, then the layout locks so feeding cannot crawl
+	-- the stack. Merge-ready leftovers still pull together.
 	if not state.frozen then
 		return
 	end
 	local pulled = self:_pullFrozenMergeReadyCells(state, dt)
 	self:_separateFrozenSplitCells(state, dt, pulled)
+end
+
+function GameService:_armFrozenSplitSettle(state)
+	local now = os.clock()
+	state.frozenSplitSettleUntil = now + math.max(Config.Cell.FrozenSplitSettleSeconds or 0.45, 0)
+	state.frozenSettleStep = nil
+	state.frozenSettleFatness = nil
+end
+
+function GameService:_clearFrozenSettleLayout(state)
+	state.frozenSplitSettleUntil = nil
+	state.frozenSettleStep = nil
+	state.frozenSettleFatness = nil
+	state.frozenFedAt = nil
 end
 
 function GameService:_pullFrozenMergeReadyCells(state, dt: number)
@@ -14805,8 +14829,19 @@ end
 
 function GameService:_separateFrozenSplitCells(state, dt: number?, skipIds)
 	-- Ease overlapping frozen pieces toward a short line. Instantly
-	-- writing packed slots made freeze-split look like a snap.
+	-- writing packed slots made freeze-split look like a snap. Stop
+	-- after a short window and ignore mass shifts so freeze-split then
+	-- feed cannot crawl the line like a snake.
 	if not state.frozen then
+		return
+	end
+
+	local now = os.clock()
+	if now &gt;= (state.frozenSplitSettleUntil or 0) then
+		return
+	end
+	local feedPause = math.max(Config.Cell.FrozenFeedPauseSettleSeconds or 0.25, 0)
+	if (state.frozenFedAt or 0) &gt; 0 and now - state.frozenFedAt &lt; feedPause then
 		return
 	end
 
@@ -14838,31 +14873,30 @@ function GameService:_separateFrozenSplitCells(state, dt: number?, skipIds)
 	-- grouped until it reaches min spacing. Tiny cells otherwise fall
 	-- out of 0.42 overlap after a few pixels and never form the line.
 	local groups = self:_frozenOverlapGroups(cells, stepMin)
-	local now = os.clock()
 
 	for _, group in groups do
 		if #group &lt; 2 then
 			continue
 		end
-		local totalMass = 0
+		local count = 0
 		local cx, cy = 0, 0
 		local axisSum = Vector2.zero
 		local radiusSum = 0
 		for _, cell in group do
-			local mass = math.max(cell.mass, 1)
-			totalMass += mass
-			cx += cell.pos.X * mass
-			cy += cell.pos.Y * mass
+			count += 1
+			cx += cell.pos.X
+			cy += cell.pos.Y
 			axisSum += cell.splitAxis or Vector2.zero
 			radiusSum += cell.radius
 		end
-		local origin = Vector2.new(cx / totalMass, cy / totalMass)
+		local origin = Vector2.new(cx / count, cy / count)
 		-- Each overlapping group keeps its own aim so two frozen blobs
 		-- can split toward a cursor between them. A single stack falls
-		-- back to the locked freeze axis.
+		-- back to the locked freeze axis. Do not follow the live mouse
+		-- or mass center — feeding would slide the whole line.
 		local axis = Vec2.safeUnit(axisSum, Vector2.zero)
 		if axis.Magnitude &lt; 0.001 then
-			axis = Vec2.safeUnit(state.frozenSplitAxis or splitAimForState(state), Vector2.new(1, 0))
+			axis = Vec2.safeUnit(state.frozenSplitAxis, Vector2.new(1, 0))
 		end
 		table.sort(group, function(a, b)
 			local alongA = (a.pos - origin):Dot(axis)
@@ -14880,6 +14914,13 @@ function GameService:_separateFrozenSplitCells(state, dt: number?, skipIds)
 			step = math.min(step, maxLine / (#group - 1))
 		end
 		local fatness = avgRadius * fatnessScale
+		if typeof(state.frozenSettleStep) ~= "number" then
+			state.frozenSettleStep = step
+			state.frozenSettleFatness = fatness
+		else
+			step = state.frozenSettleStep
+			fatness = state.frozenSettleFatness or fatness
+		end
 		local mid = (#group - 1) * 0.5
 		for index, cell in group do
 			if skipIds and skipIds[cell.id] then
@@ -15047,8 +15088,10 @@ function GameService:_toggleFreeze(state)
 		state.unfreezeGraceUntil = nil
 		state.unfreezeGraceStart = nil
 		state.unfreezeSteerUntil = nil
+		self:_clearFrozenSettleLayout(state)
 	else
 		state.frozenSince = nil
+		self:_clearFrozenSettleLayout(state)
 	end
 	return
 end
@@ -15176,6 +15219,11 @@ function GameService:_ejectMassFromCells(state, cells)
 	end
 	state.ejectCycleOffset = (startIndex - 1 + perTickLimit) % eligibleCount
 
+	if firedAny and state.frozen then
+		-- Feeding while frozen must not keep settling the split line,
+		-- or self-feed toward the cursor crawls the stack like a snake.
+		state.frozenFedAt = os.clock()
+	end
 	return firedAny
 end
 
