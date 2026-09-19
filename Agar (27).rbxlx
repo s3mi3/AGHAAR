@@ -3398,6 +3398,9 @@ function InputController:_initHudWidgets()
 		widget.defaultSize = widget.frame.Size
 		self:_makeHudGrab(widget)
 	end
+	if next(self.hudLayout) then
+		self:setHudLayout(self.hudLayout)
+	end
 	self:_bindHudDrag()
 end
 
@@ -7328,6 +7331,9 @@ function Renderer:_initHudWidgets()
 		widget.defaultSize = widget.frame.Size
 		self:_makeHudGrab(widget)
 	end
+	if next(self.hudLayout) then
+		self:setHudLayout(self.hudLayout)
+	end
 	self:_bindHudDrag()
 end
 
@@ -10526,6 +10532,10 @@ Config.Virus = {
 	DynamicSnapshotMinSpeed = 8,
 	SpawnSectionsX = 4,
 	SpawnSectionsY = 3,
+	-- After the opening seed, only drip viruses back in so eating a
+	-- patch cannot refill the whole map in one tick.
+	RespawnCooldownSeconds = 10,
+	MaxSpawnPerStep = 1,
 }
 
 Config.Spawner = {
@@ -12551,6 +12561,7 @@ end
 local HUD_LAYOUT_KEYS = {
 	score = true,
 	ping = true,
+	region = true,
 	leaderboard = true,
 	minimap = true,
 	shoot = true,
@@ -14666,9 +14677,30 @@ end
 
 function GameService:_maintainViruses(target: number)
 	local current = self:_countMap(self.viruses)
-	for _ = current + 1, target do
+	if current &gt;= target then
+		return
+	end
+	local missing = target - current
+	local now = os.clock()
+	-- Fill the opening map once. After that, eaten viruses drip back
+	-- in so a split-war cannot restock the whole arena instantly.
+	if self.virusesSeeded ~= true then
+		for _ = 1, missing do
+			self:_spawnVirus()
+		end
+		self.virusesSeeded = true
+		self.lastVirusSpawnAt = now
+		return
+	end
+	local cooldown = math.max(Config.Virus.RespawnCooldownSeconds or 10, 0)
+	if now - (self.lastVirusSpawnAt or 0) &lt; cooldown then
+		return
+	end
+	local batch = math.min(missing, math.max(Config.Virus.MaxSpawnPerStep or 1, 1))
+	for _ = 1, batch do
 		self:_spawnVirus()
 	end
+	self.lastVirusSpawnAt = now
 end
 
 function GameService:_maintainSpawners(target: number)
