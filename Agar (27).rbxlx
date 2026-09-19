@@ -4587,6 +4587,12 @@ function Renderer:setSnapshot(snapshot)
 					state.visualSeparateUntil = separateUntil
 				end
 			end
+			-- Double/triple split jumps 1→4 or 1→8 in one snapshot.
+			-- Skip sideways visual shove for a beat so the train can
+			-- leave as a straight line instead of jittering apart.
+			if ownCellsInSnapshot - (self.lastOwnCellCount or 0) &gt;= 3 then
+				self.repeatSplitVisualCalmUntil = receivedAt + (Config.Render.RepeatSplitVisualCalmSeconds or 0.35)
+			end
 			if ownCellsInSnapshot &gt;= 2 then
 				self.unfreezeReleaseSpent = false
 			end
@@ -5984,6 +5990,9 @@ function Renderer:_resolveOwnCellVisualSeparation()
 	if #cells &lt; 2 then
 		return
 	end
+	if now &lt; (self.repeatSplitVisualCalmUntil or 0) then
+		return
+	end
 
 	local passes = math.max(Config.Render.OwnCellVisualSeparationPasses or 1, 1)
 	local strength = math.clamp(Config.Render.OwnCellVisualSeparationStrength or 0.85, 0, 1)
@@ -6043,7 +6052,13 @@ function Renderer:_resolveOwnCellVisualSeparation()
 				local distanceSquared = delta:Dot(delta)
 				if distanceSquared &lt; minDist * minDist then
 					local dist = math.sqrt(distanceSquared)
-					local dir = if dist &gt; 0.001 then delta / dist else Vector2.new(1, 0)
+					local dir
+					if dist &gt; 0.001 then
+						dir = delta / dist
+					else
+						local vel = (a.velocity or Vector2.zero) + (b.velocity or Vector2.zero)
+						dir = if vel.Magnitude &gt; 1 then vel.Unit else Vector2.new(1, 0)
+					end
 					local overlap = (minDist - dist) * strength
 					if overlapCap then
 						overlap = math.min(overlap, overlapCap)
@@ -7293,8 +7308,8 @@ local BIND_ORDER = {
 	{ id = "split", label = "Split" },
 	{ id = "feed", label = "Feed" },
 	{ id = "freeze", label = "Freeze" },
-	{ id = "doubleSplit", label = "Quad Split" },
-	{ id = "tripleSplit", label = "Triple Split" },
+	{ id = "doubleSplit", label = "Triple Split" },
+	{ id = "tripleSplit", label = "Double Split" },
 }
 
 local MAP_LIGHT = {
@@ -9514,6 +9529,7 @@ Config.Cell = {
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.28,
+	RepeatSplitSteerLockSeconds = 0.4,
 	SplitPushMaxOverlapPerStep = 6,
 	-- Client interpolation trails boosted cells slightly. Swept eating could
 	-- therefore consume something the local blob had never visually reached.
@@ -9525,8 +9541,8 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 2,
 
 	-- ==================================================================
-	-- E repeats the normal Space split for every eligible cell twice.
-	-- R repeats it three times.
+	-- E / Double Split repeats the normal Space split twice (up to 4 cells).
+	-- R / Triple Split repeats it three times (up to 8 cells).
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
@@ -9939,6 +9955,7 @@ Config.Render = {
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 8,
+	RepeatSplitVisualCalmSeconds = 0.35,
 	OwnCellVisualSeparationPasses = 1,
 	OwnCellVisualSeparationStrength = 0.75,
 	OwnCellVisualSeparationScale = 1.02,
@@ -14054,14 +14071,14 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R: run three full Space-style split generations.
+		-- R / Triple Split: three Space-style generations (up to 8 cells).
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
 			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
 		end
 
-		-- E: run two full split generations.
+		-- E / Double Split: two Space-style generations (up to 4 cells).
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
@@ -14105,7 +14122,7 @@ function GameService:_sortedPlayerCells(state)
 	return cells
 end
 
-function GameService:_splitPlayer(state)
+function GameService:_splitPlayer(state, lockedAim: Vector2?)
 	local cells = self:_sortedPlayerCells(state)
 	local splitsLeft = math.min(Config.Cell.MaxSplitPiecesPerCommand, Config.Player.MaxCells - #state.cells)
 	local eligible = {}
@@ -14118,12 +14135,22 @@ function GameService:_splitPlayer(state)
 		end
 	end
 
+	local now = os.clock()
+	local steerLockUntil = if lockedAim
+		then now + math.max(Config.Cell.RepeatSplitSteerLockSeconds or 0.4, 0)
+		else nil
 	for _, cell in eligible do
-		local dir = splitAimForCell(state, cell)
+		-- Repeat splits (R/E) share one aim so the train stays a straight
+		-- line. Space still homes each piece at the cursor independently.
+		local dir = lockedAim or splitAimForCell(state, cell)
 		local childMass = cell.mass * 0.5
 		self:_setCellMass(cell, childMass)
-		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
-		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+		cell.canRecombineAt = now + recombineDelayForMass(cell.mass)
+		cell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+		cell.splitAxis = dir
+		if steerLockUntil then
+			cell.repeatSplitSteerUntil = steerLockUntil
+		end
 		local childRadius = massToRadius(childMass)
 		-- Frozen cells do not move, but retain a reduced paused launch
 		-- that resumes when freeze is released.
@@ -14151,6 +14178,10 @@ function GameService:_splitPlayer(state)
 		)
 		if child then
 			child.sweptEatStartPos = cell.pos
+			child.splitAxis = dir
+			if steerLockUntil then
+				child.repeatSplitSteerUntil = steerLockUntil
+			end
 		end
 	end
 end
@@ -14229,13 +14260,15 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 end
 
 function GameService:_repeatSplitPlayer(state, generations: number)
-	-- E/R repeat actual Space presses: every eligible cell divides on each
-	-- generation, subject to minimum mass and the global cell cap.
+	-- E/R repeat actual Space presses, but every generation keeps the same
+	-- launch axis. Re-aiming each piece at the cursor from its new offset
+	-- is what made the 4/8-cell train fan and jitter.
+	local aim = splitAimForState(state)
 	for _ = 1, math.max(math.floor(generations), 1) do
 		if #state.cells &gt;= Config.Player.MaxCells then
 			break
 		end
-		self:_splitPlayer(state)
+		self:_splitPlayer(state, aim)
 	end
 end
 
@@ -14606,6 +14639,9 @@ function GameService:_moveCells(dt: number)
 		end
 		local moveStart = cell.sweptEatStartPos or cell.pos
 		local dir, speedScale = self:_cellMoveVector(cell.owner, cell)
+		if (cell.repeatSplitSteerUntil or 0) &gt; now and cell.splitAxis then
+			dir = cell.splitAxis
+		end
 		if ownerState and (ownerState.unfreezeSteerUntil or 0) &gt; now then
 			local lockSeconds = math.max((Config.Freeze or {}).UnfreezeSteerLockSeconds or 0.28, 0.0001)
 			local remain = ownerState.unfreezeSteerUntil - now
@@ -15180,18 +15216,35 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
 					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
+						local inSplitGrace = now &lt; math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0)
+						local axis = Vec2.safeUnit(
+							(a.splitAxis or Vector2.zero) + (b.splitAxis or Vector2.zero),
+							Vec2.safeUnit(
+								(a.boost or Vector2.zero) + (b.boost or Vector2.zero),
+								state.input.aim
+							)
+						)
 						local dir
 						if dist &gt; 0.001 then
 							dir = delta / dist
 						else
 							-- Preserve the split axis for coincident pieces instead
 							-- of spraying them along arbitrary pair-specific angles.
-							dir = Vec2.safeUnit(b.boost or Vector2.zero, state.input.aim)
+							dir = axis
 							dist = 0
+						end
+						-- A same-tick 4/8-cell burst starts almost stacked.
+						-- Tiny sideways deltas become a shaky spray if we
+						-- push along them; keep the train on the launch line.
+						if inSplitGrace then
+							if dir:Dot(axis) &lt; 0 then
+								axis = -axis
+							end
+							dir = axis
 						end
 
 						local pairOverlapCap = overlapCap
-						if now &lt; math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0) then
+						if inSplitGrace then
 							pairOverlapCap = math.min(
 								pairOverlapCap,
 								math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
@@ -15209,14 +15262,18 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 
 						a.pos -= dir * overlap * aShare
 						b.pos += dir * overlap * bShare
-						local aBoost = a.boost or Vector2.zero
-						local bBoost = b.boost or Vector2.zero
-						local tangent = Vector2.new(-dir.Y, dir.X)
-						local spin = (bBoost - aBoost):Dot(tangent)
-						if math.abs(spin) &gt; 1 then
-							local kill = spin * 0.45
-							a.boost = aBoost + tangent * (kill * bShare)
-							b.boost = bBoost - tangent * (kill * aShare)
+						-- Sideways boost exchange is what made a stacked
+						-- train wobble. Leave it off during the launch.
+						if not inSplitGrace then
+							local aBoost = a.boost or Vector2.zero
+							local bBoost = b.boost or Vector2.zero
+							local tangent = Vector2.new(-dir.Y, dir.X)
+							local spin = (bBoost - aBoost):Dot(tangent)
+							if math.abs(spin) &gt; 1 then
+								local kill = spin * 0.45
+								a.boost = aBoost + tangent * (kill * bShare)
+								b.boost = bBoost - tangent * (kill * aShare)
+							end
 						end
 						a.pos = self:_clampToWorld(a.pos, a.radius)
 						b.pos = self:_clampToWorld(b.pos, b.radius)
@@ -17363,7 +17420,7 @@ function GameService:_playPlayer(state, spawnNear: boolean?, spawnMode: string?,
 			end
 		end
 	end
-	if not pos then
+	if not pos or not self:_spawnClearanceOk(pos, radius) then
 		pos = self:_pickOpenSpawn(radius)
 	end
 	state.center = pos
