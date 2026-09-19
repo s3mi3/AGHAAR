@@ -3934,6 +3934,30 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 	pingPad.PaddingLeft = UDim.new(0, 10)
 	pingPad.Parent = pingLabel
 
+	local regionLabel = Instance.new("TextLabel")
+	regionLabel.Name = "Region"
+	regionLabel.BackgroundTransparency = 0.3
+	regionLabel.BackgroundColor3 = Color3.fromRGB(20, 25, 32)
+	regionLabel.BorderSizePixel = 0
+	regionLabel.AnchorPoint = Vector2.new(0, 1)
+	regionLabel.Position = UDim2.new(0, 14, 1, -94)
+	regionLabel.Size = UDim2.fromOffset(160, 34)
+	regionLabel.Font = Enum.Font.GothamMedium
+	regionLabel.TextSize = 16
+	regionLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	regionLabel.TextXAlignment = Enum.TextXAlignment.Left
+	regionLabel.Text = "Region —"
+	regionLabel.ZIndex = 101
+	regionLabel.Parent = hud
+
+	local regionCorner = Instance.new("UICorner")
+	regionCorner.CornerRadius = UDim.new(1, 0)
+	regionCorner.Parent = regionLabel
+
+	local regionPad = Instance.new("UIPadding")
+	regionPad.PaddingLeft = UDim.new(0, 10)
+	regionPad.Parent = regionLabel
+
 	local coinLabel = Instance.new("TextLabel")
 	coinLabel.Name = "Coins"
 	coinLabel.BackgroundTransparency = 0.3
@@ -4069,6 +4093,7 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		hud = hud,
 		scoreLabel = scoreLabel,
 		pingLabel = pingLabel,
+		regionLabel = regionLabel,
 		coinLabel = coinLabel,
 		levelBadge = levelBadge,
 		levelBadgeText = levelBadgeText,
@@ -4120,7 +4145,10 @@ function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, de
 		hudAccumulator = 0,
 		lastScoreText = nil,
 		lastPingText = nil,
+		lastRegionText = nil,
 		lastCoinsText = nil,
+		serverRegion = nil,
+		friendArrowsEnabled = true,
 		lastLevelBadgeText = nil,
 		lastLevelText = nil,
 		lastLevelFill = nil,
@@ -4630,6 +4658,9 @@ function Renderer:setSnapshot(snapshot)
 	if typeof(snapshot.debugWorldResizeEnabled) == "boolean" then
 		self.debugWorldResizeEnabled = snapshot.debugWorldResizeEnabled == true
 	end
+	if typeof(snapshot.region) == "string" and snapshot.region ~= "" then
+		self.serverRegion = snapshot.region
+	end
 	if typeof(snapshot.world) == "table" and typeof(snapshot.world[1]) == "number" and typeof(snapshot.world[2]) == "number" then
 		self.worldSize = Vector2.new(snapshot.world[1], snapshot.world[2])
 	end
@@ -4761,11 +4792,10 @@ function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	if typeof(eaterPos) ~= "Vector2" or typeof(preyPos) ~= "Vector2" then
 		return false
 	end
-	-- Same swallow path as before; mass pops only once the swallowed
-	-- cell's center is clearly inside the eater it started sliding into.
+	-- Prey is under the eater once its center is clearly inside the disc.
 	local remainingDist = (preyPos - eaterPos).Magnitude
 	local underRadius = math.max(prey.consumeEaterStartRadius or eater.mergeHoldRadius or eater.radius or 1, 1)
-	return remainingDist &lt;= underRadius * 0.5
+	return remainingDist &lt;= underRadius * 0.38
 end
 
 function Renderer:_snapHeldMergeMass(eater)
@@ -4799,6 +4829,7 @@ function Renderer:_abortConsumesInto(target)
 			state.consumeTarget = nil
 			state.consumeFade = true
 			state.consumeIsMerge = false
+			state.consumeHoldEater = false
 			state.consumeStartOffset = nil
 			state.consumeStartedAt = now
 			state.consumeUntil = now + fadeSeconds
@@ -4852,19 +4883,20 @@ function Renderer:_beginConsumedCellAnimations(ids, consumeRows)
 			state.consumeStartOffset = state.displayPos - (bestTarget.displayPos or bestTarget.targetPos)
 			state.consumeStartRadius = state.radius
 			state.consumeIsMerge = isMerge
+			state.consumeHoldEater = true
 			state.consumeMass = state.mass
 			state.consumeEaterStartRadius = bestTarget.radius
-			if isMerge then
-				self:_beginMergeVisualHold(bestTarget)
-			else
-				bestTarget.snapMassGain = true
-			end
+			-- Hold the eater's size until the prey is actually underneath.
+			-- Immediate snapMassGain made you grow while they were still
+			-- sliding in, especially on high ping.
+			self:_beginMergeVisualHold(bestTarget)
 			state.extrapolate = false
 			state.isOwn = false
 		else
 			state.consumeTarget = nil
 			state.consumeFade = true
 			state.consumeIsMerge = false
+			state.consumeHoldEater = false
 			state.consumeStartedAt = now
 			state.consumeUntil = now + math.max(Config.Render.ConsumeFadeSeconds or 0.16, 0.01)
 			state.consumeStartRadius = state.radius
@@ -5620,7 +5652,11 @@ end
 
 function Renderer:_projectOwnAuthoritativeTarget(state)
 	local target = state.targetPos
+	local pingSec = math.max((self.pingMs or 80) / 1000, 0)
 	local maxLead = math.max(Config.Render.OwnCellPredictionMaxLeadSeconds or 0, 0)
+	-- Cover a slice of RTT so high ping still feels like the cell is
+	-- under the cursor instead of trailing a snapshot.
+	maxLead = math.clamp(math.max(maxLead, pingSec * 0.45), 0.06, 0.32)
 	if maxLead &gt; 0 and not self.localFrozen then
 		local receivedAge = math.max(os.clock() - (state.receivedAt or os.clock()), 0)
 		local leadSeconds = math.clamp(
@@ -5926,8 +5962,13 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 end
 
 function Renderer:_stepEntityStates(states, dt: number)
-	local alpha = 1 - math.exp(-dt * Config.Render.InterpolationSharpness)
+	local sharpness = Config.Render.InterpolationSharpness
+	if (self.pingMs or 0) &gt; 140 then
+		sharpness = math.max(sharpness * 0.72, 5)
+	end
+	local alpha = 1 - math.exp(-dt * sharpness)
 	local now = os.clock()
+	local extraExtrapolate = math.clamp((self.pingMs or 0) / 1000 * 0.35, 0, 0.22)
 	for id, state in states do
 		if state.consumeUntil then
 			local duration = math.max(state.consumeUntil - (state.consumeStartedAt or now), 0.01)
@@ -5937,15 +5978,22 @@ function Renderer:_stepEntityStates(states, dt: number)
 			if state.consumeFade == true or not target then
 				local fade = progress * progress * (3 - 2 * progress)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
-			elseif state.consumeIsMerge then
+			elseif state.consumeIsMerge or state.consumeHoldEater then
 				local pullStart = math.clamp(Config.Render.MergePullStart or 0.06, 0, 0.45)
 				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
+				if not state.consumeIsMerge then
+					pullStart = 0
+					shrinkStart = 0.18
+				end
 				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
 				local shrinkT = math.clamp((progress - shrinkStart) / math.max(1 - shrinkStart, 0.01), 0, 1)
-				-- Linear so the swallow does not ease-out and stall on the
-				-- last pixels before it goes under the eater.
-				local pull = pullT
-				local shrink = shrinkT
+				-- Finish the slide before the last frames. Linear leftover
+				-- distance on a 1s timer crawled the final pixel.
+				local catchUp = if state.consumeIsMerge then 0.62 else 0.55
+				local pulled = math.clamp(pullT / catchUp, 0, 1)
+				local pull = pulled * pulled
+				local shrinkU = math.clamp(shrinkT / catchUp, 0, 1)
+				local shrink = shrinkU * shrinkU
 				local offset = state.consumeStartOffset
 				if typeof(offset) ~= "Vector2" then
 					local startPos = state.consumeStartPos or state.displayPos
@@ -5958,6 +6006,7 @@ function Renderer:_stepEntityStates(states, dt: number)
 				state.radius = math.max(startRadius * (1 - shrink), 0)
 				if self:_mergePreyIsUnder(state, target) then
 					self:_snapHeldMergeMass(target)
+					state.radius = 0
 				end
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
@@ -5966,10 +6015,10 @@ function Renderer:_stepEntityStates(states, dt: number)
 			end
 			if now &gt;= state.consumeUntil then
 				local consumeTarget = state.consumeTarget
-				local wasMerge = state.consumeIsMerge == true
+				local wasHold = state.consumeIsMerge == true or state.consumeHoldEater == true
 				states[id] = nil
 				self.cellPool:release(id)
-				if wasMerge then
+				if wasHold then
 					self:_snapHeldMergeMass(consumeTarget)
 				end
 			end
@@ -5992,7 +6041,7 @@ function Renderer:_stepEntityStates(states, dt: number)
 			self:_stepOwnCellPrediction(state, dt, alpha)
 			continue
 		end
-		local projectedTime = if state.extrapolate then math.min(now - (state.receivedAt or now), Config.Render.ExtrapolationSeconds) else 0
+		local projectedTime = if state.extrapolate then math.min(now - (state.receivedAt or now), (Config.Render.ExtrapolationSeconds or 0.08) + extraExtrapolate) else 0
 		local projectedTarget = state.targetPos + (state.velocity or Vector2.zero) * projectedTime
 		if state.worldPadding then
 			projectedTarget = self:_clampToWorld(projectedTarget, state.worldPadding)
@@ -6306,7 +6355,7 @@ function Renderer:_updateCameraOwnRadius()
 		if state.isOwn and state.confirmed and not state.consumeUntil then
 			sum += state.radius
 			hasOwn = true
-		elseif state.consumeIsMerge == true
+		elseif (state.consumeIsMerge == true or state.consumeHoldEater == true)
 			and state.consumeFade ~= true
 			and state.consumeTarget
 			and state.consumeTarget.isOwn
@@ -6383,11 +6432,19 @@ function Renderer:_drawSimpleStates(pool, idPrefix: number, states, color: Color
 		then
 			local screen = self.camera:worldToScreen(drawPos)
 			local isPellet = idPrefix == 200000000
-			local screenRadius = if isPellet then math.max(state.radius * self.camera.zoom, 0)
-				else math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
+			local isFood = idPrefix == 100000000
+			local zoomed = state.radius * self.camera.zoom
+			-- Food and mass pellets keep world size. A pixel floor made
+			-- them grow on screen when you zoomed out.
+			local screenRadius = if isPellet or isFood
+				then math.max(zoomed, 0)
+				else math.max(zoomed, Config.Render.MinCirclePixels)
+			if (isPellet or isFood) and screenRadius &lt; 0.45 then
+				continue
+			end
 			local drawOptions = state.simpleDrawOptions or {}
 			state.simpleDrawOptions = drawOptions
-			drawOptions.exactSize = isPellet
+			drawOptions.exactSize = isPellet or isFood
 			if isPellet then drawOptions.strokeEnabled = false end
 			drawOptions.zIndex = fixedZIndex or zIndexForRadius(state.radius)
 			pool:draw(idPrefix + id, screen, screenRadius, state.color or color, drawOptions)
@@ -6396,6 +6453,9 @@ function Renderer:_drawSimpleStates(pool, idPrefix: number, states, color: Color
 end
 
 function Renderer:_updateLabel(label: TextLabel, cacheKey: string, text: string)
+	if not label then
+		return
+	end
 	if self[cacheKey] ~= text then
 		self[cacheKey] = text
 		label.Text = text
@@ -6416,6 +6476,11 @@ function Renderer:_updateHud(dt: number)
 		pingValue = math.floor(self.displayPingMs + 0.5)
 	end
 	self:_updateLabel(self.pingLabel, "lastPingText", self.localization:pingText(pingValue))
+	local region = self.serverRegion
+	if typeof(region) ~= "string" or region == "" then
+		region = "—"
+	end
+	self:_updateLabel(self.regionLabel, "lastRegionText", "Region " .. region)
 	self:_updateLabel(self.coinLabel, "lastCoinsText", self.localization:coinsText(math.floor(self.coins + 0.5)))
 	self:_updateLabel(self.levelBadgeText, "lastLevelBadgeText", self.localization:levelText(math.floor(self.level + 0.5)))
 
@@ -6472,6 +6537,7 @@ function Renderer:_prepareLiquidEdge(state, id: number, now: number): number
 	state.liquidLastPos = pos
 	if config.LiquidEdgeEnabled == false
 		or state.radius * self.camera.zoom &lt;= (config.LiquidEdgeMinPixels or 14)
+		or (self.pingMs or 0) &gt; 160
 	then
 		options.liquidEnabled = false
 		options.liquidDeformation = 0
@@ -6617,7 +6683,15 @@ function Renderer:render(dt: number?)
 		if self.camera:visible(state.displayPos, state.radius * 1.06) then
 			self:_prepareLiquidEdge(state, id, liquidTime)
 			local screen = self.camera:worldToScreen(state.displayPos)
-			local screenRadius = math.max(state.radius * self.camera.zoom, Config.Render.MinCirclePixels)
+			local zoomed = state.radius * self.camera.zoom
+			-- Swallowing cells keep world size so the last pixel of a merge
+			-- is not held at a 4px floor.
+			local screenRadius = if state.consumeUntil
+				then math.max(zoomed, 0)
+				else math.max(zoomed, Config.Render.MinCirclePixels)
+			if state.consumeUntil and screenRadius &lt; 0.45 then
+				continue
+			end
 			local extra = state.extra or {}
 			local meta = self.playerMeta[extra.ownerUserId]
 			local skinId = (meta and meta.equippedSkinId) or (meta and meta.locationSkinId) or extra.skinId
@@ -6631,8 +6705,9 @@ function Renderer:render(dt: number?)
 			local drawOptions = state.drawOptions or {}
 			state.drawOptions = drawOptions
 			drawOptions.name = name
+			drawOptions.exactSize = state.consumeUntil ~= nil
 			local shownMass = state.visualMass or state.mass
-			if state.consumeIsMerge then
+			if state.consumeUntil then
 				drawOptions.name = ""
 				drawOptions.score = ""
 			elseif shownMass ~= nil and (state.labelMass ~= shownMass or drawOptions.score == nil) then
@@ -6654,6 +6729,10 @@ function Renderer:render(dt: number?)
 				math.floor(state.radius),
 				Config.Render.CellMinZIndex or 7
 			)
+			if state.consumeUntil and state.consumeTarget then
+				local eaterRadius = state.consumeTarget.radius or state.radius
+				drawOptions.zIndex = math.max(math.floor(eaterRadius) - 2, 1)
+			end
 			if skinImage and overlayAvatar then
 				drawOptions.baseImage = skinImage
 				drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
@@ -6674,6 +6753,7 @@ function Renderer:render(dt: number?)
 	end
 
 	self:_updateHud(dt)
+	self:_refreshFriendArrows()
 
 	self.foodPool:finish()
 	self.ejectedPool:finish()
@@ -6774,6 +6854,7 @@ function Renderer:_createSocialHud()
 	self.minimap = minimap
 	self.minimapTitle = mapTitle
 	self.minimapCanvas = mapCanvas
+	self:_createFriendArrows()
 	self:_initHudWidgets()
 end
 
@@ -6794,8 +6875,12 @@ end
 function Renderer:setSocialWorld(social)
 	self.socialLeaders = social and social.leaders or {}
 	self.socialMapPlayers = social and social.mapPlayers or {}
+	if social and typeof(social.region) == "string" and social.region ~= "" then
+		self.serverRegion = social.region
+	end
 	self:_refreshLeaderboard()
 	self:_refreshMinimap()
+	self:_refreshFriendArrows()
 end
 
 function Renderer:_refreshLeaderboard()
@@ -6887,8 +6972,12 @@ function Renderer:_refreshMinimap()
 			marker.Visible = true
 			marker.Position = UDim2.fromOffset(math.floor(nx * size.X + 0.5), math.floor(ny * size.Y + 0.5))
 			local mine = person.u == localId
+			local party = person.party == true
 			local dot = marker.Dot
-			dot.BackgroundColor3 = if mine then Color3.fromRGB(88, 214, 90) else Color3.fromRGB(70, 130, 220)
+			dot.BackgroundColor3 = if mine
+				then Color3.fromRGB(88, 214, 90)
+				elseif party then Color3.fromRGB(255, 196, 64)
+				else Color3.fromRGB(70, 130, 220)
 			dot.Size = if mine then UDim2.fromOffset(9, 9) else UDim2.fromOffset(6, 6)
 			marker.Tag.Text = person.n or "Player"
 			marker.Tag.TextColor3 = if mine then Color3.fromRGB(32, 120, 48) else Color3.fromRGB(36, 44, 54)
@@ -7001,6 +7090,14 @@ function Renderer:_initHudWidgets()
 		ping = {
 			id = "ping",
 			frame = self.pingLabel,
+			minW = 96,
+			minH = 28,
+			maxW = 360,
+			maxH = 80,
+		},
+		region = {
+			id = "region",
+			frame = self.regionLabel,
 			minW = 96,
 			minH = 28,
 			maxW = 360,
@@ -7146,6 +7243,141 @@ function Renderer:setMinimapEnabled(enabled)
 	end
 	if self.hudEditEnabled then
 		self:setHudEditEnabled(true)
+	end
+end
+
+function Renderer:setFriendArrowsEnabled(enabled)
+	self.friendArrowsEnabled = enabled ~= false
+	if self.friendArrowLayer then
+		self.friendArrowLayer.Visible = self.friendArrowsEnabled
+	end
+	if self.friendArrowsEnabled ~= true then
+		self:_hideFriendArrows()
+	else
+		self:_refreshFriendArrows()
+	end
+end
+
+function Renderer:_createFriendArrows()
+	self.friendArrowMarkers = {}
+	local layer = Instance.new("Frame")
+	layer.Name = "FriendArrows"
+	layer.BackgroundTransparency = 1
+	layer.Size = UDim2.fromScale(1, 1)
+	layer.ZIndex = 120
+	layer.Parent = self.hud
+	self.friendArrowLayer = layer
+end
+
+function Renderer:_ensureFriendArrow(index)
+	local marker = self.friendArrowMarkers[index]
+	if marker then
+		return marker
+	end
+	marker = Instance.new("Frame")
+	marker.Name = "FriendArrow"
+	marker.AnchorPoint = Vector2.new(0.5, 0.5)
+	marker.BackgroundTransparency = 1
+	marker.Size = UDim2.fromOffset(0, 0)
+	marker.ZIndex = 121
+	marker.Parent = self.friendArrowLayer
+
+	local pointer = Instance.new("TextLabel")
+	pointer.Name = "Pointer"
+	pointer.AnchorPoint = Vector2.new(0.5, 0.5)
+	pointer.BackgroundTransparency = 1
+	pointer.Font = Enum.Font.GothamBold
+	pointer.Position = UDim2.fromOffset(0, 0)
+	pointer.Size = UDim2.fromOffset(28, 28)
+	pointer.Text = "▲"
+	pointer.TextColor3 = Color3.fromRGB(70, 170, 255)
+	pointer.TextSize = 22
+	pointer.ZIndex = 122
+	pointer.Parent = marker
+
+	local tag = Instance.new("TextLabel")
+	tag.Name = "Tag"
+	tag.AnchorPoint = Vector2.new(0.5, 0)
+	tag.BackgroundTransparency = 1
+	tag.Font = Enum.Font.GothamBold
+	tag.Position = UDim2.fromOffset(0, 14)
+	tag.Size = UDim2.fromOffset(90, 16)
+	tag.Text = ""
+	tag.TextColor3 = Color3.fromRGB(230, 236, 242)
+	tag.TextSize = 12
+	tag.TextStrokeTransparency = 0.4
+	tag.TextTruncate = Enum.TextTruncate.AtEnd
+	tag.ZIndex = 123
+	tag.Parent = marker
+
+	self.friendArrowMarkers[index] = marker
+	return marker
+end
+
+function Renderer:_hideFriendArrows()
+	for _, marker in self.friendArrowMarkers or {} do
+		marker.Visible = false
+	end
+end
+
+function Renderer:_refreshFriendArrows()
+	if not self.friendArrowLayer or self.friendArrowsEnabled == false then
+		self:_hideFriendArrows()
+		return
+	end
+	local camera = self.camera
+	if not camera or not camera.viewport then
+		self:_hideFriendArrows()
+		return
+	end
+	local viewport = camera.viewport
+	if viewport.X &lt; 8 or viewport.Y &lt; 8 then
+		self:_hideFriendArrows()
+		return
+	end
+	local pad = 28
+	local localId = Players.LocalPlayer.UserId
+	local used = 0
+	for _, person in self.socialMapPlayers or {} do
+		if person.u == localId then
+			continue
+		end
+		if person.friend ~= true and person.party ~= true then
+			continue
+		end
+		local worldPos = Vector2.new(person.x or 0, person.y or 0)
+		local screen = camera:worldToScreen(worldPos)
+		local onScreen = screen.X &gt;= pad
+			and screen.X &lt;= viewport.X - pad
+			and screen.Y &gt;= pad
+			and screen.Y &lt;= viewport.Y - pad
+		if onScreen then
+			continue
+		end
+		used += 1
+		local marker = self:_ensureFriendArrow(used)
+		local cx, cy = viewport.X * 0.5, viewport.Y * 0.5
+		local dx, dy = screen.X - cx, screen.Y - cy
+		if math.abs(dx) &lt; 0.001 and math.abs(dy) &lt; 0.001 then
+			dx = 1
+		end
+		local left, right = pad, viewport.X - pad
+		local top, bottom = pad, viewport.Y - pad
+		local tx = if dx &gt; 0 then (right - cx) / dx elseif dx &lt; 0 then (left - cx) / dx else math.huge
+		local ty = if dy &gt; 0 then (bottom - cy) / dy elseif dy &lt; 0 then (top - cy) / dy else math.huge
+		local t = math.min(tx, ty)
+		local edge = Vector2.new(cx + dx * t, cy + dy * t)
+		marker.Visible = true
+		marker.Position = UDim2.fromOffset(math.floor(edge.X + 0.5), math.floor(edge.Y + 0.5))
+		marker.Pointer.Rotation = math.deg(math.atan2(dx, -dy))
+		marker.Pointer.TextColor3 = if person.party == true
+			then Color3.fromRGB(255, 196, 64)
+			else Color3.fromRGB(90, 170, 255)
+		marker.Tag.Text = person.n or "Friend"
+		marker.Tag.TextColor3 = marker.Pointer.TextColor3
+	end
+	for i = used + 1, #self.friendArrowMarkers do
+		self.friendArrowMarkers[i].Visible = false
 	end
 end
 
@@ -7733,6 +7965,7 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 		pickerV = 0.95,
 		pickerDrag = nil,
 		minimapEnabled = true,
+		friendArrowsEnabled = true,
 		hudLayout = {},
 		hudEditing = false,
 		nicknameBox = nicknameBox,
@@ -8128,6 +8361,17 @@ function MainMenu:_buildSettingsPage()
 		self:_refreshSettings()
 	end)
 
+	self.friendArrowsToggle = button(right, "Friend arrows: ON", ACCENT)
+	self.friendArrowsToggle.Size = UDim2.new(1, 0, 0, 40)
+	self.friendArrowsToggle.MouseButton1Click:Connect(function()
+		self.friendArrowsEnabled = self.friendArrowsEnabled ~= true
+		if self.renderer and self.renderer.setFriendArrowsEnabled then
+			self.renderer:setFriendArrowsEnabled(self.friendArrowsEnabled)
+		end
+		self:_fire({ action = "settings", friendArrowsEnabled = self.friendArrowsEnabled == true })
+		self:_refreshSettings()
+	end)
+
 	self.settingsEditHudButton = button(right, "Move &amp; resize HUD", Color3.fromRGB(200, 206, 214))
 	self.settingsEditHudButton.Size = UDim2.new(1, 0, 0, 40)
 	self.settingsEditHudButton.MouseButton1Click:Connect(function()
@@ -8469,6 +8713,7 @@ function MainMenu:_endHudEdit(save)
 			action = "settings",
 			hudLayout = layout,
 			minimapEnabled = self.minimapEnabled ~= false,
+			friendArrowsEnabled = self.friendArrowsEnabled ~= false,
 		})
 	end
 	self:setOpen(true)
@@ -8610,6 +8855,15 @@ function MainMenu:handleUpdate(payload)
 			if self.renderer and self.renderer.setMinimapEnabled then
 				self.renderer:setMinimapEnabled(self.minimapEnabled)
 			end
+		end
+		if typeof(payload.friendArrowsEnabled) == "boolean" then
+			self.friendArrowsEnabled = payload.friendArrowsEnabled
+			if self.renderer and self.renderer.setFriendArrowsEnabled then
+				self.renderer:setFriendArrowsEnabled(self.friendArrowsEnabled)
+			end
+		end
+		if typeof(payload.region) == "string" then
+			self.social.region = payload.region
 		end
 		if payload.kind == "hello" and typeof(payload.nickname) == "string" then
 			self.nickname = payload.nickname
@@ -8985,6 +9239,11 @@ function MainMenu:_refreshSettings()
 		local on = self.minimapEnabled ~= false
 		self.minimapToggle.Text = if on then "Minimap: ON" else "Minimap: OFF"
 		self.minimapToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
+	end
+	if self.friendArrowsToggle then
+		local on = self.friendArrowsEnabled ~= false
+		self.friendArrowsToggle.Text = if on then "Friend arrows: ON" else "Friend arrows: OFF"
+		self.friendArrowsToggle.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
 	end
 	if self.mapLightButton then
 		local selected = Color3.fromRGB(16, 20, 24)
@@ -10072,10 +10331,10 @@ Config.Ejected = {
 	LifeSeconds = 30, -- was 10; ejected pellets stick around longer
 	LoadLifeSeconds = 22, -- was 8
 	HeavyLoadLifeSeconds = 16, -- was 7
-	OwnerReeatDelay = 0.1,
+	OwnerReeatDelay = 0,
 	LocalVisualMaxCellsPerShotTick = 32,
 	LocalVisualLifeSeconds = 1.25,
-	LocalVisualMinVisibleSeconds = 0.08,
+	LocalVisualMinVisibleSeconds = 0,
 	OwnerTrimRetainRadius = 1800,
 	MaxCount = 3000,
 	PerPlayerMaxCount = 384,
@@ -12027,6 +12286,10 @@ function GameService.new()
 	self.running = false
 	self.parties = {}
 	self.socialAccumulator = 0
+	self.serverRegion = nil
+	task.spawn(function()
+		self:_resolveServerRegion()
+	end)
 	return self
 end
 
@@ -12586,6 +12849,7 @@ function GameService:_addPlayer(player: Player)
 		outgoingRequests = {},
 		spawnNearEnabled = true,
 		minimapEnabled = true,
+		friendArrowsEnabled = true,
 		hudLayout = nil,
 		partyId = nil,
 		pendingPartyId = nil,
@@ -12705,6 +12969,7 @@ function GameService:_loadPlayerInfo(state)
 	state.friends = normaliseFriends(data.friends)
 	state.spawnNearEnabled = data.spawnNearEnabled ~= false
 	state.minimapEnabled = data.minimapEnabled ~= false
+	state.friendArrowsEnabled = data.friendArrowsEnabled ~= false
 	state.hudLayout = sanitiseHudLayout(data.hudLayout)
 	state.keybinds = if type(data.keybinds) == "table" then data.keybinds else nil
 	state.mapColor = if type(data.mapColor) == "table" then data.mapColor else nil
@@ -12834,6 +13099,7 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 	end
 	local spawnNearEnabled = state.spawnNearEnabled ~= false
 	local minimapEnabled = state.minimapEnabled ~= false
+	local friendArrowsEnabled = state.friendArrowsEnabled ~= false
 	local hudLayout = state.hudLayout
 	local keybinds = state.keybinds
 	local mapColor = state.mapColor
@@ -12859,6 +13125,7 @@ function GameService:_savePlayerInfo(state, force: boolean?): boolean
 			info.friends = friendsPayload
 			info.spawnNearEnabled = spawnNearEnabled
 			info.minimapEnabled = minimapEnabled
+			info.friendArrowsEnabled = friendArrowsEnabled
 			info.hudLayout = hudLayout
 			info.keybinds = keybinds
 			info.mapColor = mapColor
@@ -17587,6 +17854,7 @@ function GameService:_sendSnapshots(includeStatics: boolean?)
 				avatarDisplayMode = includeShop and normaliseAvatarDisplayMode(state.avatarDisplayMode) or nil,
 				nickname = includeShop and normaliseNickname(state.nickname) or nil,
 				debugWorldResizeEnabled = canUseWorldResizeDebug(state.player) and self.debugForceMaxWorldScale == true or false,
+				region = self:_serverRegionLabel(),
 			}
 		end
 		local snapshotRemote = if useFastSnapshot then self.remotes.SnapshotFast else self.remotes.Snapshot
@@ -17803,7 +18071,9 @@ function GameService:_socialPayload(state)
 		spectateUnlockIn = math.max((state.spectateUnlockAt or 0) - now, 0),
 		spawnNearEnabled = state.spawnNearEnabled ~= false,
 		minimapEnabled = state.minimapEnabled ~= false,
+		friendArrowsEnabled = state.friendArrowsEnabled ~= false,
 		hudLayout = state.hudLayout or {},
+		region = self:_serverRegionLabel(),
 		friends = friends,
 		incoming = incoming,
 		outgoing = outgoing,
@@ -17818,21 +18088,54 @@ function GameService:_socialPayload(state)
 	}
 end
 
-function GameService:_worldSocialPayload()
+function GameService:_serverRegionLabel(): string
+	if typeof(self.serverRegion) == "string" and self.serverRegion ~= "" then
+		return self.serverRegion
+	end
+	return "—"
+end
+
+function GameService:_resolveServerRegion()
+	-- Best-effort datacenter country from the server's egress. Shown next
+	-- to mass/ping so players know which region they connected to.
+	local names = {
+		US = "US",
+		CA = "US",
+		GB = "EU",
+		IE = "EU",
+		NL = "EU",
+		DE = "EU",
+		FR = "EU",
+		SG = "SG",
+		JP = "JP",
+		AU = "AU",
+		BR = "BR",
+		IN = "IN",
+		HK = "HK",
+		KR = "KR",
+	}
+	local ok, body = pcall(function()
+		return HttpService:GetAsync("https://www.cloudflare.com/cdn-cgi/trace")
+	end)
+	if ok and typeof(body) == "string" then
+		local loc = string.match(body, "loc=([A-Z][A-Z])")
+		if loc then
+			self.serverRegion = names[loc] or loc
+			self:_broadcastSocial()
+			return
+		end
+	end
+	self.serverRegion = self.serverRegion or "—"
+end
+
+function GameService:_worldLeadersPayload()
 	local leaders = {}
-	local mapPlayers = {}
 	for _, state in self.playersByUserId do
 		if self:_isPlaying(state) then
 			leaders[#leaders + 1] = {
 				u = state.userId,
 				n = self:_displayNameForState(state),
 				m = math.floor(self:_playerMass(state) + 0.5),
-			}
-			mapPlayers[#mapPlayers + 1] = {
-				u = state.userId,
-				n = self:_displayNameForState(state),
-				x = state.center.X,
-				y = state.center.Y,
 			}
 		end
 	end
@@ -17848,7 +18151,45 @@ function GameService:_worldSocialPayload()
 			leaders[i] = nil
 		end
 	end
-	return leaders, mapPlayers
+	return leaders
+end
+
+function GameService:_mapPlayersFor(viewer)
+	-- Minimap / friend arrows: only you, friends, and party members.
+	local list = {}
+	if not viewer then
+		return list
+	end
+	local party = self:_partyOf(viewer)
+	local partySet = {}
+	if party then
+		for _, userId in party.members do
+			partySet[userId] = true
+		end
+	end
+	for _, other in self.playersByUserId do
+		if self:_isPlaying(other) then
+			local mine = other.userId == viewer.userId
+			local friend = not mine and self:_areFriends(viewer, other)
+			local inParty = partySet[other.userId] == true
+			if mine or friend or inParty then
+				list[#list + 1] = {
+					u = other.userId,
+					n = self:_displayNameForState(other),
+					x = other.center.X,
+					y = other.center.Y,
+					friend = friend == true,
+					party = inParty,
+				}
+			end
+		end
+	end
+	return list
+end
+
+function GameService:_worldSocialPayload()
+	-- Legacy helper: leaderboard is global, minimap is per-viewer.
+	return self:_worldLeadersPayload(), {}
 end
 
 function GameService:_sendSocial(state, extra)
@@ -17856,9 +18197,10 @@ function GameService:_sendSocial(state, extra)
 		return
 	end
 	local payload = self:_socialPayload(state)
-	local leaders, mapPlayers = self:_worldSocialPayload()
+	local leaders = self:_worldLeadersPayload()
 	payload.leaders = leaders
-	payload.mapPlayers = mapPlayers
+	payload.mapPlayers = self:_mapPlayersFor(state)
+	payload.region = self:_serverRegionLabel()
 	if extra then
 		for key, value in extra do
 			payload[key] = value
@@ -18181,6 +18523,9 @@ function GameService:_handleSocialAction(player: Player, payload)
 		end
 		if typeof(payload.minimapEnabled) == "boolean" then
 			state.minimapEnabled = payload.minimapEnabled
+		end
+		if typeof(payload.friendArrowsEnabled) == "boolean" then
+			state.friendArrowsEnabled = payload.friendArrowsEnabled
 		end
 		if typeof(payload.hudLayout) == "table" then
 			state.hudLayout = sanitiseHudLayout(payload.hudLayout)
