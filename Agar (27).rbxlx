@@ -9548,7 +9548,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.32,
+	FrozenSplitNudgeRadiusScale = 0.08,
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -14200,9 +14200,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			-- Tiny step along the shot so a parked stack can become a
-			-- short line instead of one pixel. Not a live launch.
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.32, 0)
+			-- Seed a few pixels along the shot. The parked packer then
+			-- keeps the old stack, just as a short line.
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.08, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14283,7 +14283,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.32, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.08, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14363,8 +14363,9 @@ end
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
 function GameService:_separateFrozenSplitCells(state)
-	-- Frozen splits stay mostly stacked: a short, slightly thick line
-	-- along the shot. Radial unstack made them launch like a live split.
+	-- Keep the old frozen stack. Only slide that pile into a short
+	-- overlapping line so it is not one pixel. Spacing is a few
+	-- pixels, never a radius-sized launch.
 	if not state.frozen then
 		return
 	end
@@ -14383,82 +14384,92 @@ function GameService:_separateFrozenSplitCells(state)
 		return a.id &lt; b.id
 	end)
 
-	local alongNest = math.clamp(Config.Cell.FrozenSplitOverlapScale or 0.26, 0.12, 0.45)
-	local fatness = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.14, 0, 0.35)
-	local inStackScale = math.max(Config.Cell.FrozenSplitStackRadiusScale or 0.95, alongNest)
-	local passes = math.max(Config.Cell.FrozenSplitSeparatePasses or 6, 1)
-	local cap = math.max(Config.Cell.FrozenSplitSeparateMaxStep or 5, 1)
 	local fallbackAim = splitAimForState(state)
-
-	for _ = 1, passes do
-		for i = 1, #cells - 1 do
-			local a = cells[i]
-			for j = i + 1, #cells do
-				local b = cells[j]
-				local delta = b.pos - a.pos
-				local dist = delta.Magnitude
-				local combined = a.radius + b.radius
-				-- Leave already-spread pieces alone. Only the stacked pile
-				-- is packed into a line.
-				if dist &gt; combined * inStackScale and dist &gt; 0.001 then
-					continue
-				end
-
-				local child = if a.splitParentId == b.id then a
-					elseif b.splitParentId == a.id then b
-					else nil
-				local axis = Vec2.safeUnit(
-					if child then (child.splitAxis or Vector2.zero) else Vector2.zero,
-					Vec2.safeUnit(
-						(a.splitAxis or Vector2.zero) + (b.splitAxis or Vector2.zero),
-						Vec2.safeUnit(
-							(a.boost or Vector2.zero) + (b.boost or Vector2.zero),
-							fallbackAim
-						)
-					)
-				)
-				if axis.Magnitude &lt; 0.001 then
-					axis = fallbackAim
-				end
-				if delta:Dot(axis) &lt; 0 then
-					axis = -axis
-				end
-
-				local aShare = 0.12
-				local bShare = 0.88
-				if a.splitParentId == b.id then
-					aShare, bShare = 0.92, 0.08
-				elseif b.splitParentId == a.id then
-					aShare, bShare = 0.08, 0.92
-				end
-
-				local along = delta:Dot(axis)
-				local minAlong = combined * alongNest
-				if math.abs(along) &lt; minAlong then
-					local gap = math.min(minAlong - math.abs(along), cap)
-					if along &gt;= 0 then
-						a.pos -= axis * gap * aShare
-						b.pos += axis * gap * bShare
-					else
-						a.pos += axis * gap * aShare
-						b.pos -= axis * gap * bShare
-					end
-					delta = b.pos - a.pos
-				end
-
-				local side = delta - axis * delta:Dot(axis)
-				local sideMag = side.Magnitude
-				local maxSide = combined * fatness
-				if sideMag &gt; maxSide then
-					local pinch = math.min(sideMag - maxSide, cap)
-					local sideDir = side / sideMag
-					a.pos += sideDir * pinch * aShare
-					b.pos -= sideDir * pinch * bShare
-				end
-
-				a.pos = self:_clampToWorld(a.pos, a.radius)
-				b.pos = self:_clampToWorld(b.pos, b.radius)
+	local stackScale = math.max(Config.Cell.FrozenSplitStackRadiusScale or 0.98, 0.5)
+	local n = #cells
+	local parent = {}
+	for i = 1, n do
+		parent[i] = i
+	end
+	local function find(i)
+		while parent[i] ~= i do
+			parent[i] = parent[parent[i]]
+			i = parent[i]
+		end
+		return i
+	end
+	for i = 1, n - 1 do
+		local a = cells[i]
+		for j = i + 1, n do
+			local b = cells[j]
+			local dist = (b.pos - a.pos).Magnitude
+			if dist &lt;= (a.radius + b.radius) * stackScale then
+				parent[find(j)] = find(i)
 			end
+		end
+	end
+
+	local groups = {}
+	for i = 1, n do
+		local root = find(i)
+		local group = groups[root]
+		if not group then
+			group = {}
+			groups[root] = group
+		end
+		group[#group + 1] = cells[i]
+	end
+
+	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 2, 1)
+	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 5, stepMin)
+	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 16, stepMax)
+	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.05, 0, 0.2)
+
+	for _, group in groups do
+		if #group &lt; 2 then
+			continue
+		end
+		local totalMass = 0
+		local cx, cy = 0, 0
+		local axisSum = Vector2.zero
+		local radiusSum = 0
+		for _, cell in group do
+			local mass = math.max(cell.mass, 1)
+			totalMass += mass
+			cx += cell.pos.X * mass
+			cy += cell.pos.Y * mass
+			axisSum += cell.splitAxis or Vector2.zero
+			radiusSum += cell.radius
+		end
+		local origin = Vector2.new(cx / totalMass, cy / totalMass)
+		local axis = Vec2.safeUnit(axisSum, fallbackAim)
+		if axis.Magnitude &lt; 0.001 then
+			axis = fallbackAim
+		end
+		table.sort(group, function(a, b)
+			local alongA = (a.pos - origin):Dot(axis)
+			local alongB = (b.pos - origin):Dot(axis)
+			if alongA == alongB then
+				return a.id &lt; b.id
+			end
+			return alongA &lt; alongB
+		end)
+
+		local avgRadius = radiusSum / #group
+		local step = math.clamp(avgRadius * 0.045, stepMin, stepMax)
+		if #group &gt; 1 then
+			step = math.min(step, maxLine / (#group - 1))
+		end
+		local fatness = avgRadius * fatnessScale
+		local mid = (#group - 1) * 0.5
+		for index, cell in group do
+			local along = (index - 1 - mid) * step
+			local rel = cell.pos - origin
+			local side = rel - axis * rel:Dot(axis)
+			if side.Magnitude &gt; fatness then
+				side = if side.Magnitude &gt; 0.001 then side.Unit * fatness else Vector2.zero
+			end
+			cell.pos = self:_clampToWorld(origin + axis * along + side, cell.radius)
 		end
 	end
 end
