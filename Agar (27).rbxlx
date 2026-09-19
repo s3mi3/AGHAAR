@@ -9548,7 +9548,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.75,
+	FrozenSplitNudgeRadiusScale = 0.32,
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -14200,10 +14200,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			-- Parked splits cannot fly out, so sit the child beside the
-			-- parent instead of nesting on its center.
-			local frozenNudge = (cell.radius + childRadius)
-				* math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.75, 0)
+			-- Tiny step along the shot so a parked stack can become a
+			-- short line instead of one pixel. Not a live launch.
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.32, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14284,8 +14283,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = (cell.radius + pieceRadius)
-					* math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.75, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.32, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14365,9 +14363,8 @@ end
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
 function GameService:_separateFrozenSplitCells(state)
-	-- Live splits fly out with boost. Frozen splits cannot move or
-	-- push, so a parked burst would sit on one pixel. Place those
-	-- pieces beside each other once; do not touch unfrozen splitting.
+	-- Frozen splits stay mostly stacked: a short, slightly thick line
+	-- along the shot. Radial unstack made them launch like a live split.
 	if not state.frozen then
 		return
 	end
@@ -14386,10 +14383,12 @@ function GameService:_separateFrozenSplitCells(state)
 		return a.id &lt; b.id
 	end)
 
-	local nest = math.clamp(Config.Cell.FrozenSplitOverlapScale or 0.82, 0.35, 1)
-	local passes = math.max(Config.Cell.FrozenSplitSeparatePasses or 8, 1)
-	local cap = math.max(Config.Cell.FrozenSplitSeparateMaxStep or 18, 4)
-	local fallbackAim = Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
+	local alongNest = math.clamp(Config.Cell.FrozenSplitOverlapScale or 0.26, 0.12, 0.45)
+	local fatness = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.14, 0, 0.35)
+	local inStackScale = math.max(Config.Cell.FrozenSplitStackRadiusScale or 0.95, alongNest)
+	local passes = math.max(Config.Cell.FrozenSplitSeparatePasses or 6, 1)
+	local cap = math.max(Config.Cell.FrozenSplitSeparateMaxStep or 5, 1)
+	local fallbackAim = splitAimForState(state)
 
 	for _ = 1, passes do
 		for i = 1, #cells - 1 do
@@ -14398,41 +14397,65 @@ function GameService:_separateFrozenSplitCells(state)
 				local b = cells[j]
 				local delta = b.pos - a.pos
 				local dist = delta.Magnitude
-				local minDist = (a.radius + b.radius) * nest
-				if dist &gt;= minDist then
+				local combined = a.radius + b.radius
+				-- Leave already-spread pieces alone. Only the stacked pile
+				-- is packed into a line.
+				if dist &gt; combined * inStackScale and dist &gt; 0.001 then
 					continue
 				end
-				local dir
-				if dist &gt; 0.001 then
-					dir = delta / dist
-				else
-					local child = if a.splitParentId == b.id then a
-						elseif b.splitParentId == a.id then b
-						else nil
-					dir = Vec2.safeUnit(
-						if child then (child.splitAxis or Vector2.zero) else Vector2.zero,
+
+				local child = if a.splitParentId == b.id then a
+					elseif b.splitParentId == a.id then b
+					else nil
+				local axis = Vec2.safeUnit(
+					if child then (child.splitAxis or Vector2.zero) else Vector2.zero,
+					Vec2.safeUnit(
+						(a.splitAxis or Vector2.zero) + (b.splitAxis or Vector2.zero),
 						Vec2.safeUnit(
 							(a.boost or Vector2.zero) + (b.boost or Vector2.zero),
 							fallbackAim
 						)
 					)
-					if dir.Magnitude &lt; 0.001 then
-						local angle = (i + j) * 2.399963229728653
-						dir = Vector2.new(math.cos(angle), math.sin(angle))
-					end
-					dist = 0
+				)
+				if axis.Magnitude &lt; 0.001 then
+					axis = fallbackAim
 				end
-				local overlap = math.min(minDist - dist, cap)
-				local total = math.max(a.mass + b.mass, 1)
-				local aShare = b.mass / total
-				local bShare = a.mass / total
+				if delta:Dot(axis) &lt; 0 then
+					axis = -axis
+				end
+
+				local aShare = 0.12
+				local bShare = 0.88
 				if a.splitParentId == b.id then
 					aShare, bShare = 0.92, 0.08
 				elseif b.splitParentId == a.id then
 					aShare, bShare = 0.08, 0.92
 				end
-				a.pos -= dir * overlap * aShare
-				b.pos += dir * overlap * bShare
+
+				local along = delta:Dot(axis)
+				local minAlong = combined * alongNest
+				if math.abs(along) &lt; minAlong then
+					local gap = math.min(minAlong - math.abs(along), cap)
+					if along &gt;= 0 then
+						a.pos -= axis * gap * aShare
+						b.pos += axis * gap * bShare
+					else
+						a.pos += axis * gap * aShare
+						b.pos -= axis * gap * bShare
+					end
+					delta = b.pos - a.pos
+				end
+
+				local side = delta - axis * delta:Dot(axis)
+				local sideMag = side.Magnitude
+				local maxSide = combined * fatness
+				if sideMag &gt; maxSide then
+					local pinch = math.min(sideMag - maxSide, cap)
+					local sideDir = side / sideMag
+					a.pos += sideDir * pinch * aShare
+					b.pos -= sideDir * pinch * bShare
+				end
+
 				a.pos = self:_clampToWorld(a.pos, a.radius)
 				b.pos = self:_clampToWorld(b.pos, b.radius)
 			end
