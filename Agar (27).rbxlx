@@ -4535,6 +4535,7 @@ function Renderer:setSnapshot(snapshot)
 			spawners = decodeFixedBuffer(snapshot.sp, 4),
 			barriers = decodeFixedBuffer(snapshot.ba, 5),
 			score = snapshot.sc,
+			players = snapshot.p or snapshot.players,
 		}
 	elseif typeof(snapshot) == "table" and snapshot.k == "e" then
 		snapshot = {
@@ -6942,7 +6943,7 @@ function Renderer:render(dt: number?)
 					drawOptions.baseImage = skinImage
 					drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
 					drawOptions.baseImageRectSize = skin and skin.imageRectSize
-				elseif not skipDecor then
+				else
 					drawOptions.image = avatarImage
 					drawOptions.imageScaleType = avatarScaleType
 				end
@@ -18228,6 +18229,7 @@ function GameService:_sendSnapshots(includeStatics: boolean?)
 				sp = self:_packFixedBuffer(fastSpawnersPayload, 4),
 				ba = self:_packFixedBuffer(fastBarriersPayload, 5),
 				sc = round(self:_playerMass(state), Config.Network.MassPrecision),
+				p = playerMetaPayload,
 			}
 		else
 			snapshotPayload = {
