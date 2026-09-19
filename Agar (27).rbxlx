@@ -9737,7 +9737,7 @@ Config.Virus = {
 	-- Preserve hazard density in the smaller arena.
 	TargetCount = 78,
 	Mass = 800,
-	Radius = 14,
+	Radius = 22,
 	-- Eligibility and coverage use Cell.MinEatRatio / Cell.EnemyEatOverlap.
 	-- Below the 32-cell cap a virus bursts the eater into more pieces.
 	-- At the cap, the virus is absorbed and its mass is gained instead.
@@ -11192,6 +11192,10 @@ end
 
 local function massToRadius(mass: number): number
 	return math.sqrt(math.max(mass, 1)) * Config.Cell.RadiusScale
+end
+
+local function virusRadius(): number
+	return massToRadius(Config.Virus.Mass or 800)
 end
 
 local function rotateDirection(direction: Vector2, angle: number): Vector2
@@ -12985,7 +12989,7 @@ function GameService:_pickVirusSpawnPosition(): Vector2
 	local chosenIndex = bestIndices[self.rng:NextInteger(1, #bestIndices)]
 	local chosenX = ((chosenIndex - 1) % sectionsX) + 1
 	local chosenY = math.floor((chosenIndex - 1) / sectionsX) + 1
-	local radius = Config.Virus.Radius
+	local radius = virusRadius()
 	local minX = worldMin.X + (chosenX - 1) * sectionWidth + radius
 	local maxX = worldMin.X + chosenX * sectionWidth - radius
 	local minY = worldMin.Y + (chosenY - 1) * sectionHeight + radius
@@ -13000,12 +13004,13 @@ end
 function GameService:_spawnVirus(pos: Vector2?)
 	local spawnPos = pos or self:_pickVirusSpawnPosition()
 	local id = self:_nextId()
+	local radius = virusRadius()
 	self.viruses[id] = {
 		id = id,
 		kind = "virus",
-		pos = self:_clampToWorld(spawnPos, Config.Virus.Radius),
+		pos = self:_clampToWorld(spawnPos, radius),
 		mass = Config.Virus.Mass,
-		radius = Config.Virus.Radius,
+		radius = radius,
 		vel = Vector2.zero,
 		lastBumpDir = Vector2.new(1, 0),
 	}
@@ -15669,7 +15674,7 @@ function GameService:_queueEatEventsForCell(cell, events)
 	end
 
 	local potentialRadius = massToRadius(potentialMass)
-	local maxVirusRadius = Config.Virus.Radius
+	local maxVirusRadius = virusRadius()
 	local virusCandidates = self.virusGrid:query(cell.pos, potentialRadius + maxVirusRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in virusCandidates do
 		local virus = self.viruses[id]
