@@ -2485,16 +2485,20 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	end
 
 	local parts = self.parts[frame]
-	if options and options.serrated then
+	local simple = options and options.simple == true
+	if not simple and options and options.serrated then
 		ensureSerrations(frame, parts)
 	end
-	local liquid = options and options.liquidEnabled == true
-	local smoothCell = options and (options.liquidDeformation ~= nil or options.exactSize == true)
+	local liquid = not simple and options and options.liquidEnabled == true
+	local smoothCell = not simple and options and (options.liquidDeformation ~= nil or options.exactSize == true)
 	local zIndex = options and options.zIndex or self.zIndex
 	applyZIndex(frame, parts, zIndex)
 	local width = options and options.width and math.max(math.floor(options.width + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
 	local height = options and options.height and math.max(math.floor(options.height + 0.5), 1) or math.max(math.floor(radius * 2 + 0.5), 1)
-	if smoothCell then
+	if simple then
+		width = math.max(radius * 2, if options and options.exactSize then 0 else 1)
+		height = width
+	elseif smoothCell then
 		width = math.max(radius * 2, if options and options.exactSize then 0 else 1)
 		height = width
 	end
@@ -2510,6 +2514,26 @@ function CirclePool:draw(id: number, screenPos: Vector2, radius: number, color: 
 	local x = if smoothCell then screenPos.X else math.floor(screenPos.X + 0.5)
 	local y = if smoothCell then screenPos.Y else math.floor(screenPos.Y + 0.5)
 	self.touched[id] = true
+	if simple then
+		if parts.skin then
+			setCached(parts, "skinVisible", parts.skin, "Visible", false)
+		end
+		if parts.avatar then
+			setCached(parts, "avatarVisible", parts.avatar, "Visible", false)
+		end
+		if parts.labelStack then
+			setCached(parts, "labelVisible", parts.labelStack, "Visible", false)
+		end
+		if parts.stroke then
+			setCached(parts, "strokeEnabled", parts.stroke, "Enabled", not options or options.strokeEnabled ~= false)
+		end
+		setCached(parts, "frameColor", frame, "BackgroundColor3", color)
+		setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
+		setCached(parts, "framePosition", frame, "Position", UDim2.fromOffset(x, y))
+		setCached(parts, "frameSize", frame, "Size", UDim2.fromOffset(width, height))
+		setCached(parts, "frameVisible", frame, "Visible", true)
+		return
+	end
 	setCached(parts, "frameColor", frame, "BackgroundColor3", color)
 	setCached(parts, "frameTransparency", frame, "BackgroundTransparency", options and options.backgroundTransparency or 0)
 	setCached(parts, "framePosition", frame, "Position", UDim2.fromOffset(x, y))
@@ -5443,9 +5467,17 @@ end
 
 function Renderer:_drawGrid()
 	local viewport = self.camera.viewport
-	local spacing = 100 * self.camera.zoom
-	if spacing &lt; 35 then
-		spacing = 35
+	local worldStep = Config.Render.GridWorldStep or 100
+	local spacing = worldStep * self.camera.zoom
+	local minScreen = Config.Render.GridMinScreenSpacing or 72
+	-- Keep world-space alignment, but drop to coarser grid steps so zoomed-out
+	-- views do not spawn ~80 GUI lines at 35px.
+	while spacing &lt; minScreen and worldStep &lt; 1600 do
+		worldStep *= 2
+		spacing *= 2
+	end
+	if spacing &lt; minScreen then
+		spacing = minScreen
 	end
 	self:_ensureGridLines(viewport, spacing)
 
@@ -6559,26 +6591,29 @@ function Renderer:_ownCellCanTouchPickupFromList(candidates, state, minMass: num
 end
 
 function Renderer:_drawSimpleStates(pool, idPrefix: number, states, color: Color3, shouldSuppress, fixedZIndex: number?)
+	local isPellet = idPrefix == 200000000
+	local isFood = idPrefix == 100000000
+	local minFoodPx = Config.Render.FoodMinScreenPixels or 1.2
+	local zoom = self.camera.zoom
 	for id, state in states do
 		local drawPos = state.renderPos or state.displayPos
+		if (isPellet or isFood) and (state.radius or 0) * zoom &lt; minFoodPx then
+			continue
+		end
 		if self:_stateIsDrawable(state)
 			and not (shouldSuppress and shouldSuppress(state))
 			and self.camera:visible(drawPos, state.radius)
 		then
 			local screen = self.camera:worldToScreen(drawPos)
-			local isPellet = idPrefix == 200000000
-			local isFood = idPrefix == 100000000
-			local zoomed = state.radius * self.camera.zoom
+			local zoomed = state.radius * zoom
 			-- Food and mass pellets keep world size. A pixel floor made
 			-- them grow on screen when you zoomed out.
 			local screenRadius = if isPellet or isFood
 				then math.max(zoomed, 0)
 				else math.max(zoomed, Config.Render.MinCirclePixels)
-			if (isPellet or isFood) and screenRadius &lt; 0.45 then
-				continue
-			end
 			local drawOptions = state.simpleDrawOptions or {}
 			state.simpleDrawOptions = drawOptions
+			drawOptions.simple = isPellet or isFood
 			drawOptions.exactSize = isPellet or isFood
 			if isPellet then drawOptions.strokeEnabled = false end
 			drawOptions.zIndex = fixedZIndex or zIndexForRadius(state.radius)
@@ -6814,17 +6849,19 @@ function Renderer:render(dt: number?)
 		end
 	end
 
+	local cellDecorMin = Config.Render.CellDecorMinPixels or 16
 	for id, state in self.cellStates do
 		-- Cull using the maximum deformation before doing any effect/artwork work.
 		if self.camera:visible(state.displayPos, state.radius * 1.06) then
-			if state.isOwn and (self.ownMoveCellCount or 0) &lt; 12 then
+			local zoomed = state.radius * self.camera.zoom
+			local skipDecor = zoomed &lt; cellDecorMin
+			if not skipDecor and state.isOwn and (self.ownMoveCellCount or 0) &lt; 12 then
 				self:_prepareLiquidEdge(state, id, liquidTime)
 			elseif state.drawOptions then
 				state.drawOptions.liquidEnabled = false
 				state.drawOptions.liquidDeformation = 0
 			end
 			local screen = self.camera:worldToScreen(state.displayPos)
-			local zoomed = state.radius * self.camera.zoom
 			-- Swallowing cells keep world size so the last pixel of a merge
 			-- is not held at a 4px floor.
 			local screenRadius = if state.consumeUntil
@@ -6834,27 +6871,10 @@ function Renderer:render(dt: number?)
 				continue
 			end
 			local extra = state.extra or {}
-			local meta = self.playerMeta[extra.ownerUserId]
-			local skinId = (meta and meta.equippedSkinId) or (meta and meta.locationSkinId) or extra.skinId
-			local skin = SkinData.ById[skinId]
-			local skinImage = skin and skin.image or (meta and meta.skinImage) or extra.skinImage
-			local overlayAvatar = meta ~= nil and meta.overlayAvatar == true
-			local avatarDisplayMode = normaliseAvatarDisplayMode(meta and meta.avatarDisplayMode)
-			local avatarImage = extra.ownerUserId and self:_thumbnailForUserId(extra.ownerUserId, avatarDisplayMode) or nil
-			local avatarScaleType = if avatarDisplayMode == "face" then Enum.ScaleType.Crop else Enum.ScaleType.Fit
-			local name = (meta and meta.name) or extra.name or "Player"
 			local drawOptions = state.drawOptions or {}
 			state.drawOptions = drawOptions
-			drawOptions.name = name
 			drawOptions.exactSize = state.consumeUntil ~= nil
-			local shownMass = state.visualMass or state.mass
-			if state.consumeUntil then
-				drawOptions.name = ""
-				drawOptions.score = ""
-			elseif shownMass ~= nil and (state.labelMass ~= shownMass or drawOptions.score == nil) then
-				state.labelMass = shownMass
-				drawOptions.score = displayScore(shownMass)
-			end
+			drawOptions.simple = skipDecor == true
 			drawOptions.baseImage = nil
 			drawOptions.baseImageColor = nil
 			drawOptions.baseImageRectOffset = nil
@@ -6874,20 +6894,39 @@ function Renderer:render(dt: number?)
 				local eaterRadius = state.consumeTarget.radius or state.radius
 				drawOptions.zIndex = math.max(math.floor(eaterRadius) - 2, 1)
 			end
-			if skinImage and overlayAvatar then
-				drawOptions.baseImage = skinImage
-				drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
-				drawOptions.baseImageRectSize = skin and skin.imageRectSize
-				drawOptions.image = avatarImage
-				drawOptions.imageScaleType = avatarScaleType
-				drawOptions.overlayScale = 1
-			elseif skinImage then
-				drawOptions.baseImage = skinImage
-				drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
-				drawOptions.baseImageRectSize = skin and skin.imageRectSize
+			if skipDecor or state.consumeUntil then
+				drawOptions.name = ""
+				drawOptions.score = ""
 			else
-				drawOptions.image = avatarImage
-				drawOptions.imageScaleType = avatarScaleType
+				local meta = self.playerMeta[extra.ownerUserId]
+				local skinId = (meta and meta.equippedSkinId) or (meta and meta.locationSkinId) or extra.skinId
+				local skin = SkinData.ById[skinId]
+				local skinImage = skin and skin.image or (meta and meta.skinImage) or extra.skinImage
+				local overlayAvatar = meta ~= nil and meta.overlayAvatar == true
+				local avatarDisplayMode = normaliseAvatarDisplayMode(meta and meta.avatarDisplayMode)
+				local avatarImage = extra.ownerUserId and self:_thumbnailForUserId(extra.ownerUserId, avatarDisplayMode) or nil
+				local avatarScaleType = if avatarDisplayMode == "face" then Enum.ScaleType.Crop else Enum.ScaleType.Fit
+				drawOptions.name = (meta and meta.name) or extra.name or "Player"
+				local shownMass = state.visualMass or state.mass
+				if shownMass ~= nil and (state.labelMass ~= shownMass or drawOptions.score == nil or drawOptions.score == "") then
+					state.labelMass = shownMass
+					drawOptions.score = displayScore(shownMass)
+				end
+				if skinImage and overlayAvatar then
+					drawOptions.baseImage = skinImage
+					drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
+					drawOptions.baseImageRectSize = skin and skin.imageRectSize
+					drawOptions.image = avatarImage
+					drawOptions.imageScaleType = avatarScaleType
+					drawOptions.overlayScale = 1
+				elseif skinImage then
+					drawOptions.baseImage = skinImage
+					drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
+					drawOptions.baseImageRectSize = skin and skin.imageRectSize
+				else
+					drawOptions.image = avatarImage
+					drawOptions.imageScaleType = avatarScaleType
+				end
 			end
 			self.cellPool:draw(id, screen, screenRadius, state.color or Color3.fromRGB(80, 150, 240), drawOptions)
 		end
@@ -10144,15 +10183,15 @@ return MainMenu
 -- Start here when customizing the template. These values keep the current
 -- gameplay feel by default; change them deliberately and test in Studio.
 Config.World = {
-	Size = Vector2.new(2800, 2800), -- half the previous 5600 arena
-	SpawnPadding = 110,
+	Size = Vector2.new(1400, 1400), -- half the previous 2800 arena
+	SpawnPadding = 55,
 }
 
 Config.DynamicWorld = {
 	BasePlayers = 6,
 	MaxScale = 1.75,
-	ClusterPadding = 520,
-	ActiveCellMargin = 260,
+	ClusterPadding = 260,
+	ActiveCellMargin = 130,
 	ShrinkDelaySeconds = 35,
 	TargetHysteresis = 0.08,
 	ExpandSpeed = 750,
@@ -10417,16 +10456,16 @@ end
 
 Config.Food = {
 	-- Match the smaller arena's area, preserving density with fewer entities.
-	TargetCount = 370,
-	LoadTargetCount = 275,
-	HeavyLoadTargetCount = 155,
-	BonusTargetCount = 120,
-	LoadBonusTargetCount = 75,
-	HeavyLoadBonusTargetCount = 45,
+	TargetCount = 92,
+	LoadTargetCount = 69,
+	HeavyLoadTargetCount = 39,
+	BonusTargetCount = 30,
+	LoadBonusTargetCount = 19,
+	HeavyLoadBonusTargetCount = 11,
 	Mass = 25,
 	Radius = 6,
-	SpawnBatch = 120,
-	PruneBatch = 120,
+	SpawnBatch = 60,
+	PruneBatch = 60,
 	SpawnSectionsX = 5,
 	SpawnSectionsY = 5,
 	Colors = {
@@ -10453,7 +10492,7 @@ Config.Food = {
 
 Config.Virus = {
 	-- Preserve hazard density in the smaller arena.
-	TargetCount = 78,
+	TargetCount = 20,
 	Mass = 800,
 	Radius = 22,
 	-- Eligibility and coverage use Cell.MinEatRatio / Cell.EnemyEatOverlap.
@@ -10474,7 +10513,7 @@ Config.Virus = {
 }
 
 Config.Spawner = {
-	TargetCount = 4, -- preserve density in the compact arena
+	TargetCount = 1, -- preserve density in the compact arena
 	BaseMass = 900,
 	BaseRadius = 82,
 	MaxRadius = 1600,
@@ -10488,8 +10527,8 @@ Config.Spawner = {
 	GrowthPerSecond = 900,
 	DecayPerSecond = 0.12,
 	MaxPelletsPerFeed = 64,
-	MaxMapPellets = 360,
-	PelletScatterRadius = 110,
+	MaxMapPellets = 90,
+	PelletScatterRadius = 55,
 }
 
 Config.Barrier = {
@@ -10500,7 +10539,7 @@ Config.Barrier = {
 }
 
 Config.Coin = {
-	TargetCount = 45,
+	TargetCount = 11,
 	Value = 1,
 	Radius = 10,
 	SpawnBatch = 30,
@@ -10641,14 +10680,14 @@ Config.Network = {
 	ViewportPadding = 220,
 	LoadViewportPadding = 160,
 	HeavyLoadViewportPadding = 120,
-	MaxSnapshotRadius = 4200,
-	LoadMaxSnapshotRadius = 3600,
-	HeavyLoadMaxSnapshotRadius = 3000,
+	MaxSnapshotRadius = 2100,
+	LoadMaxSnapshotRadius = 1800,
+	HeavyLoadMaxSnapshotRadius = 1500,
 	StaticRefreshDistance = 220,
 	StaticRefreshRadiusDelta = 240,
 	StaticRefreshMaxInterval = 2.5,
 	MaxCellsPerSnapshot = 220,
-	MaxFoodPerSnapshot = 150,
+	MaxFoodPerSnapshot = 80,
 	MaxVirusesPerSnapshot = 32,
 	MaxSpawnersPerSnapshot = 8,
 	MaxBarriersPerSnapshot = 6,
@@ -10681,6 +10720,11 @@ Config.Network = {
 Config.Render = {
 	WorldToScreenScale = 1,
 	MinCirclePixels = 4,
+	-- Zoom-out LOD. Dense 35px grids and sub-pixel food Frames tank FPS.
+	GridWorldStep = 100,
+	GridMinScreenSpacing = 72,
+	FoodMinScreenPixels = 1.2,
+	CellDecorMinPixels = 16,
 	-- Smoothness knobs. Higher = snappier / more responsive but jittery.
 	-- Lower = smoother / floatier. dt-independent (alpha = 1 - exp(-k*dt)).
 	InterpolationSharpness = 9, -- was 12; even smoother position/radius lerp
@@ -17340,7 +17384,7 @@ function GameService:_snapshotRadius(state): number
 		end
 	end
 
-	return math.clamp(maxView * 0.65 + totalRadius + padding, 1400, maxRadius)
+	return math.clamp(maxView * 0.65 + totalRadius + padding, 700, maxRadius)
 end
 
 function GameService:_appendSnapshotEntities(list, grid, source, center: Vector2, radius: number, maxCount: number, pack, sortByDistance: boolean?)
