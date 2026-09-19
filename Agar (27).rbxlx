@@ -9548,8 +9548,13 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.2,
+	FrozenSplitNudgeRadiusScale = 0.28,
 	FrozenSplitHeldBoostScale = 1,
+	FrozenSplitLineMaxLength = 72,
+	FrozenSplitLineStepMin = 8,
+	FrozenSplitLineStepMax = 16,
+	FrozenSplitLineFatnessScale = 0.12,
+	FrozenSplitLineStepRadiusScale = 0.12,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
 	RepeatSplitSteerLockSeconds = 0.4,
@@ -10178,6 +10183,11 @@ Config.Tunables = {
 	{ path = "Freeze.ReleaseImpulseMinScale",     label = "Release Impulse Min Scale", type = "number", min = 0,    max = 1,     step = 0.05 },
 	{ path = "Freeze.ReleaseMinHoldSeconds",      label = "Release Min Hold (s)",      type = "number", min = 0,    max = 5,     step = 0.05 },
 	{ path = "Freeze.UnfreezeSteerLockSeconds",   label = "Unfreeze Steer Lock (s)",   type = "number", min = 0,    max = 1.5,   step = 0.05 },
+	{ path = "Cell.FrozenSplitLineMaxLength",     label = "Freeze-Split Line Length",  type = "number", min = 0,    max = 200,   step = 2 },
+	{ path = "Cell.FrozenSplitLineStepMin",       label = "Freeze-Split Min Spacing",  type = "number", min = 0,    max = 40,    step = 0.5 },
+	{ path = "Cell.FrozenSplitLineStepMax",       label = "Freeze-Split Max Spacing",  type = "number", min = 0,    max = 40,    step = 0.5 },
+	{ path = "Cell.FrozenSplitNudgeRadiusScale",  label = "Freeze-Split Nudge",        type = "number", min = 0,    max = 1,     step = 0.02 },
+	{ path = "Cell.FrozenSplitLineFatnessScale",  label = "Freeze-Split Thickness",    type = "number", min = 0,    max = 0.4,   step = 0.01 },
 
 	-- Cannibalize (hold C)
 	{ path = "Cell.CannibalizeEnabled",           label = "Cannibalize Enabled",       type = "bool" },
@@ -14202,7 +14212,7 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 		if state.frozen then
 			-- Seed a few pixels along the shot. The parked packer then
 			-- keeps the old stack, just as a short line.
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.2, 0)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.28, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14283,7 +14293,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.2, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.28, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14420,10 +14430,10 @@ function GameService:_separateFrozenSplitCells(state)
 		group[#group + 1] = cells[i]
 	end
 
-	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 6, 1)
-	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 12, stepMin)
-	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 48, stepMax)
-	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.1, 0, 0.25)
+	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 8, 1)
+	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 16, stepMin)
+	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 72, stepMax)
+	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.12, 0, 0.4)
 
 	for _, group in groups do
 		if #group &lt; 2 then
@@ -14456,7 +14466,8 @@ function GameService:_separateFrozenSplitCells(state)
 		end)
 
 		local avgRadius = radiusSum / #group
-		local step = math.clamp(avgRadius * 0.12, stepMin, stepMax)
+		local stepScale = math.max(Config.Cell.FrozenSplitLineStepRadiusScale or 0.12, 0)
+		local step = math.clamp(avgRadius * stepScale, stepMin, stepMax)
 		if #group &gt; 1 then
 			step = math.min(step, maxLine / (#group - 1))
 		end
