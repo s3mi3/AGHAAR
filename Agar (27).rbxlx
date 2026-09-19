@@ -4967,10 +4967,9 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 					else 1
 				local ownSingleSplit = extra and extra.isOwn == true and self.singleSplitVisual
 				if self.localFrozen then
-					-- Frozen pieces are already parked beside the parent.
-					-- Starting on the origin made a freeze-split look like
-					-- one stacked blob until unfreeze.
-					displayPos = pos
+					-- Peel off the parent toward the parked offset instead
+					-- of popping onto the freeze-split line.
+					displayPos = spawnOrigin
 					displayRadius = radius
 					if launchDir.Magnitude &gt; 0.001 and not self.frozenSplitAim then
 						self.frozenSplitAim = launchDir
@@ -5177,20 +5176,8 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		end
 	end
 
-	local previousTarget = state.targetPos
 	state.entityKind = kind
 	state.targetPos = pos
-	if self.localFrozen
-		and kind == "cell"
-		and extra
-		and extra.isOwn == true
-		and previousTarget
-		and (pos - previousTarget).Magnitude &gt; 1
-	then
-		-- Server just parked a freeze-split. Follow that placement
-		-- instead of staying glued to the pre-split stack.
-		state.displayPos = pos
-	end
 	state.targetRadius = radius
 	state.mass = mass
 	if (state.mergePending or state.mergeHoldRadius) and typeof(mass) == "number" then
@@ -5868,9 +5855,14 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 
 	local dir, speedScale = movementVectorToTarget(self, state.displayPos, state.radius)
 	if self.localFrozen then
-		-- Stay parked. Barrier resolution while frozen shoved overlapping
-		-- pieces around each other as they changed size from feeding.
+		-- Soft-follow the server park, freeze-split settle, and merge
+		-- pull. Do not mouse-predict or resolve barriers; that shoved
+		-- overlapping pieces around each other while feeding.
 		self:_stepCellRadius(state, dt)
+		local error = authoritativeTarget - state.displayPos
+		if error.Magnitude &gt; 0.1 then
+			state.displayPos = state.displayPos:Lerp(authoritativeTarget, reconcileAlpha)
+		end
 		return
 	end
 	local moveSpeed = Config.clusterCappedMoveSpeed(speedForMass(state.mass), self.clusterMaxSpeed)
@@ -9735,6 +9727,10 @@ Config.Cell = {
 	FrozenSplitLineStepMax = 52,
 	FrozenSplitLineFatnessScale = 0.28,
 	FrozenSplitLineStepRadiusScale = 0.12,
+	FrozenSplitSettleSpeed = 240,
+	FrozenMergePullSpeed = 520,
+	FrozenMergePullRangeScale = 12,
+	FrozenMergeTargetOverlap = 0.1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
 	RepeatSplitSteerLockSeconds = 0.4,
@@ -9999,8 +9995,8 @@ Config.Shop = {
 -- (velocity is paused, not zeroed), so a mid-flight split resumes
 -- its trajectory when you unfreeze. Release also adds a short
 -- outward spring so a frozen stack pops apart instead of oozing
--- into a clump. Sibling merges pause while frozen so freeze-feeding
--- cannot swallow the piece you aimed at.
+-- into a clump. Merge-ready frozen siblings still pull together
+-- so leftover blobs can finish combining.
 -- Debounce prevents accidental double-taps from cancelling.
 -- ==================================================================
 Config.Freeze = {
@@ -10375,6 +10371,8 @@ Config.Tunables = {
 	{ path = "Cell.FrozenSplitLineStepMax",       label = "Freeze-Split Max Spacing",  type = "number", min = 0,    max = 80,    step = 0.5 },
 	{ path = "Cell.FrozenSplitNudgeRadiusScale",  label = "Freeze-Split Nudge",        type = "number", min = 0,    max = 1,     step = 0.02 },
 	{ path = "Cell.FrozenSplitLineFatnessScale",  label = "Freeze-Split Thickness",    type = "number", min = 0,    max = 0.8,   step = 0.01 },
+	{ path = "Cell.FrozenSplitSettleSpeed",       label = "Freeze-Split Settle Speed", type = "number", min = 0,    max = 800,   step = 10 },
+	{ path = "Cell.FrozenMergePullSpeed",         label = "Freeze Merge Pull Speed",   type = "number", min = 0,    max = 1200,  step = 10 },
 
 	-- Cannibalize (hold C)
 	{ path = "Cell.CannibalizeEnabled",           label = "Cannibalize Enabled",       type = "bool" },
@@ -14483,9 +14481,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			end
 		end
 	end
-	if state.frozen then
-		self:_separateFrozenSplitCells(state)
-	end
+	-- Frozen pieces peel from the parent by FrozenSplitNudgeRadiusScale.
+	-- The parked line is settled over time in _moveCells so the stack
+	-- does not teleport onto even slots.
 end
 
 function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAim: Vector2?)
@@ -14570,9 +14568,6 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAi
 			end
 		end
 	end
-	if state.frozen then
-		self:_separateFrozenSplitCells(state)
-	end
 end
 
 function GameService:_repeatSplitPlayer(state, generations: number)
@@ -14627,11 +14622,11 @@ end
 
 -- ==================================================================
 -- FREEZE ability (toggle). Flips state.frozen. When frozen:
---  * _moveCells skips position updates and boost decay for the
---    owner's cells.
+--  * _moveCells skips mouse steering and boost decay for the
+--    owner's cells. Merge-ready siblings still pull together, and
+--    a fresh freeze-split eases into a short line instead of snapping.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
---  * Ready sibling pairs can still merge in place.
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
 function GameService:_frozenSplitChildVelocity()
@@ -14662,8 +14657,9 @@ function GameService:_frozenCellsAreOneStack(state): boolean
 	return groupCount == 1
 end
 
-function GameService:_frozenOverlapGroups(cells)
+function GameService:_frozenOverlapGroups(cells, extraDistance: number?)
 	local stackScale = math.clamp(Config.Cell.FrozenSplitStackRadiusScale or 0.42, 0.15, 1)
+	local extra = math.max(extraDistance or 0, 0)
 	local n = #cells
 	local parent = {}
 	for i = 1, n do
@@ -14681,7 +14677,7 @@ function GameService:_frozenOverlapGroups(cells)
 		for j = i + 1, n do
 			local b = cells[j]
 			local dist = (b.pos - a.pos).Magnitude
-			if dist &lt;= (a.radius + b.radius) * stackScale then
+			if dist &lt;= (a.radius + b.radius) * stackScale + extra then
 				parent[find(j)] = find(i)
 			end
 		end
@@ -14699,11 +14695,124 @@ function GameService:_frozenOverlapGroups(cells)
 	return groups
 end
 
-function GameService:_separateFrozenSplitCells(state)
-	-- Keep the old frozen stack. Only slide that pile into a short
-	-- overlapping line so it is not one pixel. Spacing is a few
-	-- pixels, never a radius-sized launch.
+function GameService:_frozenCellMergeReady(cell, now: number): boolean
+	if not cell then
+		return false
+	end
+	if now &lt; (cell.canRecombineAt or 0) then
+		return false
+	end
+	if now &lt; (cell.burstImmuneUntil or 0) then
+		return false
+	end
+	return true
+end
+
+function GameService:_updateFrozenParkedCells(state, dt: number)
+	-- Frozen cells do not follow the mouse. They only ease a fresh
+	-- freeze-split into a short line, then pull merge-ready leftovers
+	-- together so the last two blobs can finish combining.
 	if not state.frozen then
+		return
+	end
+	local pulled = self:_pullFrozenMergeReadyCells(state, dt)
+	self:_separateFrozenSplitCells(state, dt, pulled)
+end
+
+function GameService:_pullFrozenMergeReadyCells(state, dt: number)
+	local now = os.clock()
+	local cells = {}
+	for _, id in state.cells do
+		local cell = self.cells[id]
+		if cell then
+			cells[#cells + 1] = cell
+		end
+	end
+	if #cells &lt; 2 then
+		return {}
+	end
+
+	local ready = {}
+	for _, cell in cells do
+		if self:_frozenCellMergeReady(cell, now) then
+			ready[#ready + 1] = cell
+		end
+	end
+	if #ready &lt; 2 then
+		return {}
+	end
+
+	table.sort(ready, function(a, b)
+		if a.mass ~= b.mass then
+			return a.mass &gt; b.mass
+		end
+		return a.id &lt; b.id
+	end)
+
+	-- Faster than the freeze-split settle so leftover pairs combine at
+	-- the old stacked-merge pace instead of drifting in slowly.
+	local speed = math.max(Config.Cell.FrozenMergePullSpeed or 520, 0)
+	local rangeScale = math.max(Config.Cell.FrozenMergePullRangeScale or 12, 0)
+	local always = #cells &lt;= 2 or #ready &lt;= 2
+	local pulled = {}
+	local used = {}
+
+	for i = 1, #ready - 1 do
+		local a = ready[i]
+		if used[a.id] then
+			continue
+		end
+		local best = nil
+		local bestDist = math.huge
+		for j = i + 1, #ready do
+			local b = ready[j]
+			if used[b.id] then
+				continue
+			end
+			local dist = (b.pos - a.pos).Magnitude
+			if dist &lt; 0.5 then
+				continue
+			end
+			if not always and dist &gt; (a.radius + b.radius) * rangeScale then
+				continue
+			end
+			if dist &lt; bestDist then
+				best = b
+				bestDist = dist
+			end
+		end
+		if not best then
+			continue
+		end
+		used[a.id] = true
+		used[best.id] = true
+		pulled[a.id] = true
+		pulled[best.id] = true
+		local dir = (best.pos - a.pos) / bestDist
+		local close = math.min(speed * math.max(dt, 0), bestDist - 0.01)
+		if close &lt;= 0 then
+			continue
+		end
+		local totalMass = math.max(a.mass + best.mass, 1)
+		local aMove = close * (best.mass / totalMass)
+		local bMove = close - aMove
+		a.pos = self:_clampToWorld(a.pos + dir * aMove, a.radius)
+		best.pos = self:_clampToWorld(best.pos - dir * bMove, best.radius)
+	end
+
+	return pulled
+end
+
+function GameService:_separateFrozenSplitCells(state, dt: number?, skipIds)
+	-- Ease overlapping frozen pieces toward a short line. Instantly
+	-- writing packed slots made freeze-split look like a snap.
+	if not state.frozen then
+		return
+	end
+
+	local stepDt = math.max(dt or 0, 0)
+	local settleSpeed = math.max(Config.Cell.FrozenSplitSettleSpeed or 240, 0)
+	if stepDt &lt;= 0 or settleSpeed &lt;= 0 then
 		return
 	end
 
@@ -14721,11 +14830,15 @@ function GameService:_separateFrozenSplitCells(state)
 		return a.id &lt; b.id
 	end)
 
-	local groups = self:_frozenOverlapGroups(cells)
 	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 26, 1)
 	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 52, stepMin)
 	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 280, stepMax)
 	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.28, 0, 1)
+	-- Keep stack detection tight for aim, but let a settling line stay
+	-- grouped until it reaches min spacing. Tiny cells otherwise fall
+	-- out of 0.42 overlap after a few pixels and never form the line.
+	local groups = self:_frozenOverlapGroups(cells, stepMin)
+	local now = os.clock()
 
 	for _, group in groups do
 		if #group &lt; 2 then
@@ -14769,13 +14882,26 @@ function GameService:_separateFrozenSplitCells(state)
 		local fatness = avgRadius * fatnessScale
 		local mid = (#group - 1) * 0.5
 		for index, cell in group do
+			if skipIds and skipIds[cell.id] then
+				continue
+			end
+			if self:_frozenCellMergeReady(cell, now) then
+				continue
+			end
 			local along = (index - 1 - mid) * step
 			local rel = cell.pos - origin
 			local side = rel - axis * rel:Dot(axis)
 			if side.Magnitude &gt; fatness then
 				side = if side.Magnitude &gt; 0.001 then side.Unit * fatness else Vector2.zero
 			end
-			cell.pos = self:_clampToWorld(origin + axis * along + side, cell.radius)
+			local desired = self:_clampToWorld(origin + axis * along + side, cell.radius)
+			local delta = desired - cell.pos
+			local dist = delta.Magnitude
+			if dist &lt; 0.5 then
+				continue
+			end
+			local travel = math.min(settleSpeed * stepDt, dist)
+			cell.pos = self:_clampToWorld(cell.pos + delta.Unit * travel, cell.radius)
 		end
 	end
 end
@@ -15130,10 +15256,16 @@ function GameService:_moveCells(dt: number)
 		end
 	end
 
+	for _, state in self.playersByUserId do
+		if state.frozen then
+			self:_updateFrozenParkedCells(state, dt)
+		end
+	end
+
 	for _, cell in self.cells do
-		-- Frozen owner =&gt; hard stop. Skip position update AND boost decay
-		-- so split momentum resumes verbatim on unfreeze. Mass decay still
-		-- applies so parking doesn't cheese decay timers.
+		-- Frozen owner =&gt; no mouse steering or boost decay. Line settle
+		-- and merge pull already ran in _updateFrozenParkedCells. Mass
+		-- decay still applies so parking doesn't cheese decay timers.
 		local ownerState = self.playersByUserId[cell.ownerUserId]
 		if ownerState and ownerState.frozen then
 			local highDecayFraction = playerHighMassDecayFraction[cell.ownerUserId]
@@ -15668,9 +15800,9 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 	local gracePasses = math.max(freezeCfg.UnfreezePushPasses or basePasses, 1)
 
 	for _, state in self.playersByUserId do
-		-- Frozen owner =&gt; no push resolution. Cells sit exactly where
-		-- they are so freeze truly stops them dead. Merging still
-		-- happens via _handleEating when they overlap.
+		-- Frozen owner =&gt; no push resolution. Cells sit except for the
+		-- freeze-split settle and merge-ready pull in _moveCells. Merging
+		-- still happens via _handleEating when they overlap.
 		if state.frozen then
 			continue
 		end
@@ -16232,12 +16364,18 @@ function GameService:_cellCanEatCellAt(cell, target, now: number, eaterMass: num
 
 		-- Base merge uses lenient overlap; cannibalize requires the
 		-- target's CENTER to be inside the eater's disc so the player
-		-- has to actively line it up.
+		-- has to actively line it up. Frozen leftovers use a slightly
+		-- earlier overlap so a pulled pair can finish combining.
 		local eatDistance
 		if cannibalAllowed and not canRecombine then
 			eatDistance = eaterRadius - target.radius * (cellConfig.CannibalizeOverlap or 0.85)
 		else
-			eatDistance = eaterRadius - target.radius * 0.25
+			local mergeOverlap = 0.25
+			local owner = self.playersByUserId[cell.ownerUserId]
+			if owner and owner.frozen then
+				mergeOverlap = cellConfig.FrozenMergeTargetOverlap or 0.1
+			end
+			eatDistance = eaterRadius - target.radius * mergeOverlap
 		end
 		return eatDistance &gt; 0 and Vec2.distanceSquared(cell.pos, target.pos) &lt;= eatDistance * eatDistance
 	end
