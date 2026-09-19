@@ -4962,13 +4962,15 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			requireConfirm = isStatic,
 			confirmed = true,
 			staticPos = if isStatic then pos else nil,
-			spawnAnimatingUntil = if displayPos ~= pos then receivedAt + (Config.Render.SplitSpawnAnimationSeconds or 0.28) else nil,
-			spawnAnimationStartedAt = if displayPos ~= pos then receivedAt else nil,
-			spawnAnimationOrigin = if displayPos ~= pos then displayPos else nil,
-			spawnAnimationSource = if displayPos ~= pos then spawnSource else nil,
-			spawnAnimationOffset = if displayPos ~= pos then displayPos - pos else nil,
-			spawnAnimationTargetPos = if displayPos ~= pos then pos else nil,
-			spawnAnimationStartRadius = if displayPos ~= pos then displayRadius else nil,
+			-- Appear on the parent immediately. Prediction applies
+			-- splitVisualBoost this frame so the burst is not eased in.
+			spawnAnimatingUntil = nil,
+			spawnAnimationStartedAt = nil,
+			spawnAnimationOrigin = nil,
+			spawnAnimationSource = spawnSource,
+			spawnAnimationOffset = nil,
+			spawnAnimationTargetPos = nil,
+			spawnAnimationStartRadius = nil,
 			splitVisualBoost = splitVisualBoost,
 		}
 		states[id] = state
@@ -5649,7 +5651,7 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	local duration = math.max(Config.Render.SplitSpawnAnimationSeconds or (untilTime - startedAt), 0.001)
 	local elapsed = math.max(now - startedAt, 0)
 	if state.splitVisualBoost and not self.localFrozen then
-		state.splitVisualBoost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
+		state.splitVisualBoost *= math.exp(-dt * math.max(Config.Cell.SplitBoostDragPerSecond or 1.9, 0))
 	end
 
 	-- targetPos is already projected by the caller. Leading it again made
@@ -5720,7 +5722,7 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 			self.clusterMoveRadius or 0, predictedVelocity, moveSpeed)
 	end
 	if state.splitVisualBoost and not self.localFrozen then
-		state.splitVisualBoost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
+		state.splitVisualBoost *= math.exp(-dt * math.max(Config.Cell.SplitBoostDragPerSecond or 1.9, 0))
 		if state.splitVisualBoost.Magnitude &lt; 1 then
 			state.splitVisualBoost = nil
 		else
@@ -9523,7 +9525,7 @@ Config.Cell = {
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
-	SplitSpawnOffsetRadiusScale = 0.22,
+	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
 	FrozenSplitNudgeRadiusScale = 0.55,
@@ -13485,11 +13487,15 @@ function GameService:_splitImpulseForMass(mass: number, multiplier: number?): nu
 end
 
 function GameService:_splitLaunchBoost(cell, direction: Vector2, childMass: number, multiplier: number?): Vector2
-	local freshSpeed = self:_splitImpulseForMass(childMass, multiplier)
-	local inheritedForwardSpeed = math.max((cell.boost or Vector2.zero):Dot(direction), 0)
-		* math.clamp(Config.Cell.SplitInheritedBoostScale or 0.85, 0, 1)
-	local maxBoost = math.max((Config.Cell.SplitMaxBoost or freshSpeed) * Config.smallCellSplitScale(childMass), freshSpeed)
-	return direction * math.min(freshSpeed + inheritedForwardSpeed, maxBoost)
+	-- existing extra velocity + impulse along the split. Steering stays
+	-- on the normal move path so this does not double-count cursor speed.
+	local impulse = self:_splitImpulseForMass(childMass, multiplier)
+	local launched = (cell.boost or Vector2.zero) + direction * impulse
+	local maxBoost = math.max((Config.Cell.SplitMaxBoost or impulse) * Config.smallCellSplitScale(childMass), impulse)
+	if launched.Magnitude &gt; maxBoost then
+		return launched.Unit * maxBoost
+	end
+	return launched
 end
 
 function GameService:_spawnFoodPellet(pos: Vector2, pelletMass: number, angle: number?, sourceRadius: number?)
@@ -14295,8 +14301,6 @@ function GameService:_lockTrainToAim(state, aim: Vector2, origin: Vector2)
 		if cell then
 			local along = (cell.pos - origin):Dot(aim)
 			cell.pos = self:_clampToWorld(origin + aim * along, cell.radius)
-			local forward = math.max((cell.boost or Vector2.zero):Dot(aim), 0)
-			cell.boost = aim * forward
 			cell.splitAxis = aim
 		end
 	end
@@ -14738,7 +14742,10 @@ function GameService:_moveCells(dt: number)
 		local steering = Config.balanceClusterVelocity(cell.pos, playerCentroid[cell.ownerUserId],
 			ownerState and ownerState.clusterMoveRadius or 0, dir * speed * speedScale, speed)
 
-		cell.boost *= math.max(0, 1 - dt * (Config.Cell.SplitBoostDragPerSecond or 1.9))
+		cell.boost *= math.exp(-dt * math.max(Config.Cell.SplitBoostDragPerSecond or 1.9, 0))
+		if cell.boost.Magnitude &lt; 1 then
+			cell.boost = Vector2.zero
+		end
 		cell.sweptEatStartPos = moveStart
 		cell.sweptEatBoostSpeed = cell.boost.Magnitude
 		cell.pos += (steering + cell.boost) * dt
