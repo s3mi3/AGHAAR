@@ -7407,7 +7407,13 @@ function Renderer:_refreshFriendArrows()
 		self:_hideFriendArrows()
 		return
 	end
-	local pad = 28
+	local edgePad = 28
+	-- Sit on an inner ellipse so arrows stay near the middle of the
+	-- view instead of the screen corners, where HUD and the Roblox
+	-- topbar hide them.
+	local cx, cy = viewport.X * 0.5, viewport.Y * 0.5
+	local ringX = math.clamp(viewport.X * 0.22, 96, math.max(cx - 96, 96))
+	local ringY = math.clamp(viewport.Y * 0.20, 72, math.max(cy - 80, 72))
 	local localId = Players.LocalPlayer.UserId
 	local used = 0
 	for _, person in self.socialMapPlayers or {} do
@@ -7419,28 +7425,23 @@ function Renderer:_refreshFriendArrows()
 		end
 		local worldPos = Vector2.new(person.x or 0, person.y or 0)
 		local screen = camera:worldToScreen(worldPos)
-		local onScreen = screen.X &gt;= pad
-			and screen.X &lt;= viewport.X - pad
-			and screen.Y &gt;= pad
-			and screen.Y &lt;= viewport.Y - pad
+		local onScreen = screen.X &gt;= edgePad
+			and screen.X &lt;= viewport.X - edgePad
+			and screen.Y &gt;= edgePad
+			and screen.Y &lt;= viewport.Y - edgePad
 		if onScreen then
 			continue
 		end
 		used += 1
 		local marker = self:_ensureFriendArrow(used)
-		local cx, cy = viewport.X * 0.5, viewport.Y * 0.5
 		local dx, dy = screen.X - cx, screen.Y - cy
 		if math.abs(dx) &lt; 0.001 and math.abs(dy) &lt; 0.001 then
 			dx = 1
 		end
-		local left, right = pad, viewport.X - pad
-		local top, bottom = pad, viewport.Y - pad
-		local tx = if dx &gt; 0 then (right - cx) / dx elseif dx &lt; 0 then (left - cx) / dx else math.huge
-		local ty = if dy &gt; 0 then (bottom - cy) / dy elseif dy &lt; 0 then (top - cy) / dy else math.huge
-		local t = math.min(tx, ty)
-		local edge = Vector2.new(cx + dx * t, cy + dy * t)
+		local t = 1 / math.sqrt((dx * dx) / (ringX * ringX) + (dy * dy) / (ringY * ringY))
+		local ring = Vector2.new(cx + dx * t, cy + dy * t)
 		marker.Visible = true
-		marker.Position = UDim2.fromOffset(math.floor(edge.X + 0.5), math.floor(edge.Y + 0.5))
+		marker.Position = UDim2.fromOffset(math.floor(ring.X + 0.5), math.floor(ring.Y + 0.5))
 		marker.Pointer.Rotation = math.deg(math.atan2(dx, -dy))
 		marker.Pointer.TextColor3 = if person.party == true
 			then Color3.fromRGB(255, 196, 64)
@@ -8221,14 +8222,7 @@ function MainMenu:_buildSkinsPage()
 		avatar.Parent = cell
 		corner(avatar, 74)
 
-		local name = label(card, info.label, 15, TEXT, true)
-		name.AnchorPoint = Vector2.new(0.5, 0)
-		name.Position = UDim2.new(0.5, 0, 0, 166)
-		name.Size = UDim2.new(1, 0, 0, 22)
-		name.TextXAlignment = Enum.TextXAlignment.Center
-		name.ZIndex = 5
-
-		local modeButton = button(card, "", Color3.fromRGB(200, 206, 214))
+		local modeButton = button(card, info.label, Color3.fromRGB(200, 206, 214))
 		modeButton.AnchorPoint = Vector2.new(0.5, 1)
 		modeButton.Position = UDim2.new(0.5, 0, 1, -4)
 		modeButton.Size = UDim2.new(1, 0, 0, 36)
@@ -8246,7 +8240,6 @@ function MainMenu:_buildSkinsPage()
 			avatar = avatar,
 			stroke = stroke,
 			button = modeButton,
-			name = name,
 		}
 	end
 
@@ -9125,7 +9118,7 @@ function MainMenu:_refreshSkins()
 			preview.stroke.Transparency = if on then 0 else 1
 		end
 		if preview.button then
-			preview.button.Text = ""
+			preview.button.Text = (preview.info and preview.info.label) or preview.button.Text
 			preview.button.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
 			preview.button.TextColor3 = Color3.fromRGB(16, 20, 24)
 		end
