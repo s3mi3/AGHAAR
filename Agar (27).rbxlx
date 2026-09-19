@@ -4881,7 +4881,7 @@ function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	end
 	local remainingDist = (preyPos - eaterPos).Magnitude
 	local underRadius = math.max(eater.radius or eater.mergeHoldRadius or 1, 1)
-	return remainingDist &lt;= underRadius * 0.4
+	return remainingDist &lt;= underRadius
 end
 
 function Renderer:_snapHeldMergeMass(eater)
@@ -6087,12 +6087,9 @@ function Renderer:_stepEntityStates(states, dt: number)
 				end
 				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
-				local shrink = math.clamp((pull - 0.48) / 0.52, 0, 1)
+				local shrink = math.clamp((pull - 0.35) / 0.65, 0, 1)
 				state.radius = math.max(startRadius * (1 - shrink), 0)
-				if state.mergeMassApplied ~= true
-					and pull &gt;= 0.84
-					and self:_mergePreyIsUnder(state, target)
-				then
+				if state.mergeMassApplied ~= true and self:_mergePreyIsUnder(state, target) then
 					self:_applyPreyMergeMass(target, state)
 					state.radius = 0
 				end
