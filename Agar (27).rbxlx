@@ -4822,6 +4822,54 @@ function Renderer:_beginMergeVisualHold(eater)
 	eater.radiusVelocity = 0
 end
 
+function Renderer:_incomingMergeCount(eater, exceptPrey): number
+	local n = 0
+	for _, state in self.cellStates do
+		if state ~= exceptPrey
+			and state.consumeTarget == eater
+			and state.consumeFade ~= true
+			and state.mergeMassApplied ~= true
+			and (state.consumeIsMerge == true or state.consumeHoldEater == true)
+		then
+			n += 1
+		end
+	end
+	return n
+end
+
+function Renderer:_applyPreyMergeMass(eater, prey)
+	if not eater or not prey or prey.mergeMassApplied then
+		return
+	end
+	prey.mergeMassApplied = true
+	local preyMass = math.max(prey.consumeMass or 0, 0)
+	local holdMass = eater.mergeHoldMass or eater.visualMass or eater.mass or 0
+	local nextMass = holdMass + preyMass
+	local goalMass = eater.mergeGoalMass
+	if typeof(goalMass) == "number" and goalMass &gt; 0 then
+		nextMass = math.min(math.max(nextMass, holdMass), goalMass)
+	end
+	if preyMass &lt;= 0 and typeof(goalMass) == "number" then
+		nextMass = goalMass
+	end
+	eater.mergeHoldMass = nextMass
+	eater.visualMass = nextMass
+	local radius = math.sqrt(math.max(nextMass, 1)) * (Config.Cell.RadiusScale or 0.78)
+	if typeof(eater.mergeGoalRadius) == "number" then
+		radius = math.min(radius, eater.mergeGoalRadius)
+	end
+	eater.mergeHoldRadius = radius
+	eater.radius = radius
+	eater.radiusVelocity = 0
+	if self:_incomingMergeCount(eater, prey) &lt;= 0 then
+		local goalRadius = eater.mergeGoalRadius or eater.targetRadius or radius
+		eater.radius = goalRadius
+		eater.targetRadius = goalRadius
+		eater.visualMass = eater.mergeGoalMass or nextMass
+		self:_clearMergeVisualHold(eater)
+	end
+end
+
 function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	if not prey or not eater then
 		return false
@@ -4831,10 +4879,9 @@ function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	if typeof(eaterPos) ~= "Vector2" or typeof(preyPos) ~= "Vector2" then
 		return false
 	end
-	-- Prey is under the eater once its center is well inside the disc.
 	local remainingDist = (preyPos - eaterPos).Magnitude
-	local underRadius = math.max(prey.consumeEaterStartRadius or eater.mergeHoldRadius or eater.radius or 1, 1)
-	return remainingDist &lt;= underRadius * 0.22
+	local underRadius = math.max(eater.radius or eater.mergeHoldRadius or 1, 1)
+	return remainingDist &lt;= underRadius * 0.4
 end
 
 function Renderer:_snapHeldMergeMass(eater)
@@ -6029,26 +6076,24 @@ function Renderer:_stepEntityStates(states, dt: number)
 				local fade = progress * progress * (3 - 2 * progress)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
 			elseif state.consumeIsMerge or state.consumeHoldEater then
-				-- One smooth swallow: ride the eater, slide in, and shrink
-				-- together. Finish before the last frames so it does not
-				-- crawl the final pixel.
-				local u = math.clamp(progress / 0.9, 0, 1)
-				local s = u * u * (3 - 2 * u)
+				-- Smooth pull-in, then add mass only when this cell is under
+				-- the eater so size and score stay in sync.
+				local t = math.clamp(progress / 0.94, 0, 1)
+				local pull = 1 - (1 - t) * (1 - t)
 				local offset = state.consumeStartOffset
 				if typeof(offset) ~= "Vector2" then
 					local startPos = state.consumeStartPos or state.displayPos
 					offset = startPos - targetPos
 				end
-				state.displayPos = targetPos + offset * (1 - s)
+				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
-				state.radius = math.max(startRadius * (1 - s), 0)
-				if target.mergeHoldRadius ~= nil then
-					local goal = target.mergeGoalRadius or target.targetRadius or target.mergeHoldRadius
-					target.radius = target.mergeHoldRadius + (goal - target.mergeHoldRadius) * s
-					target.radiusVelocity = 0
-				end
-				if s &gt;= 0.72 and self:_mergePreyIsUnder(state, target) then
-					self:_snapHeldMergeMass(target)
+				local shrink = math.clamp((pull - 0.48) / 0.52, 0, 1)
+				state.radius = math.max(startRadius * (1 - shrink), 0)
+				if state.mergeMassApplied ~= true
+					and pull &gt;= 0.84
+					and self:_mergePreyIsUnder(state, target)
+				then
+					self:_applyPreyMergeMass(target, state)
 					state.radius = 0
 				end
 			else
@@ -6059,11 +6104,11 @@ function Renderer:_stepEntityStates(states, dt: number)
 			if now &gt;= state.consumeUntil then
 				local consumeTarget = state.consumeTarget
 				local wasHold = state.consumeIsMerge == true or state.consumeHoldEater == true
+				if wasHold then
+					self:_applyPreyMergeMass(consumeTarget, state)
+				end
 				states[id] = nil
 				self.cellPool:release(id)
-				if wasHold then
-					self:_snapHeldMergeMass(consumeTarget)
-				end
 			end
 			continue
 		end
@@ -7317,8 +7362,8 @@ end
 
 function Renderer:setFriendArrowsEnabled(enabled)
 	self.friendArrowsEnabled = enabled ~= false
-	if self.friendArrowLayer then
-		self.friendArrowLayer.Visible = self.friendArrowsEnabled
+	if self.friendArrowGui then
+		self.friendArrowGui.Enabled = self.friendArrowsEnabled ~= false
 	end
 	if self.friendArrowsEnabled ~= true then
 		self:_hideFriendArrows()
@@ -7329,12 +7374,21 @@ end
 
 function Renderer:_createFriendArrows()
 	self.friendArrowMarkers = {}
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "AgarFriendArrows"
+	configureFullscreenGui(gui)
+	gui.DisplayOrder = 45
+	gui.ResetOnSpawn = false
+	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	gui.Parent = self.gui.Parent
+	self.friendArrowGui = gui
+
 	local layer = Instance.new("Frame")
 	layer.Name = "FriendArrows"
 	layer.BackgroundTransparency = 1
 	layer.Size = UDim2.fromScale(1, 1)
-	layer.ZIndex = 120
-	layer.Parent = self.hud
+	layer.ZIndex = 1
+	layer.Parent = gui
 	self.friendArrowLayer = layer
 end
 
@@ -7348,7 +7402,7 @@ function Renderer:_ensureFriendArrow(index)
 	marker.AnchorPoint = Vector2.new(0.5, 0.5)
 	marker.BackgroundTransparency = 1
 	marker.Size = UDim2.fromOffset(0, 0)
-	marker.ZIndex = 121
+	marker.ZIndex = 2
 	marker.Parent = self.friendArrowLayer
 
 	local pointer = Instance.new("TextLabel")
@@ -7357,11 +7411,14 @@ function Renderer:_ensureFriendArrow(index)
 	pointer.BackgroundTransparency = 1
 	pointer.Font = Enum.Font.GothamBold
 	pointer.Position = UDim2.fromOffset(0, 0)
-	pointer.Size = UDim2.fromOffset(28, 28)
+	pointer.Size = UDim2.fromOffset(42, 42)
 	pointer.Text = "▲"
-	pointer.TextColor3 = Color3.fromRGB(70, 170, 255)
-	pointer.TextSize = 22
-	pointer.ZIndex = 122
+	pointer.TextColor3 = Color3.fromRGB(255, 255, 255)
+	pointer.TextTransparency = 0.22
+	pointer.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	pointer.TextStrokeTransparency = 0.55
+	pointer.TextSize = 30
+	pointer.ZIndex = 3
 	pointer.Parent = marker
 
 	local tag = Instance.new("TextLabel")
@@ -7369,14 +7426,16 @@ function Renderer:_ensureFriendArrow(index)
 	tag.AnchorPoint = Vector2.new(0.5, 0)
 	tag.BackgroundTransparency = 1
 	tag.Font = Enum.Font.GothamBold
-	tag.Position = UDim2.fromOffset(0, 14)
-	tag.Size = UDim2.fromOffset(90, 16)
+	tag.Position = UDim2.fromOffset(0, 16)
+	tag.Size = UDim2.fromOffset(110, 18)
 	tag.Text = ""
-	tag.TextColor3 = Color3.fromRGB(230, 236, 242)
-	tag.TextSize = 12
-	tag.TextStrokeTransparency = 0.4
+	tag.TextColor3 = Color3.fromRGB(255, 255, 255)
+	tag.TextTransparency = 0.18
+	tag.TextSize = 13
+	tag.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	tag.TextStrokeTransparency = 0.5
 	tag.TextTruncate = Enum.TextTruncate.AtEnd
-	tag.ZIndex = 123
+	tag.ZIndex = 4
 	tag.Parent = marker
 
 	self.friendArrowMarkers[index] = marker
@@ -7391,8 +7450,14 @@ end
 
 function Renderer:_refreshFriendArrows()
 	if not self.friendArrowLayer or self.friendArrowsEnabled == false then
+		if self.friendArrowGui then
+			self.friendArrowGui.Enabled = false
+		end
 		self:_hideFriendArrows()
 		return
+	end
+	if self.friendArrowGui then
+		self.friendArrowGui.Enabled = true
 	end
 	local camera = self.camera
 	if not camera or not camera.viewport then
@@ -7404,13 +7469,15 @@ function Renderer:_refreshFriendArrows()
 		self:_hideFriendArrows()
 		return
 	end
-	local edgePad = 28
-	-- Sit on an inner ellipse so arrows stay near the middle of the
-	-- view instead of the screen corners, where HUD and the Roblox
-	-- topbar hide them.
+	local edgePad = 36
 	local cx, cy = viewport.X * 0.5, viewport.Y * 0.5
-	local ringX = math.clamp(viewport.X * 0.22, 96, math.max(cx - 96, 96))
-	local ringY = math.clamp(viewport.Y * 0.20, 72, math.max(cy - 80, 72))
+	local ownPx = 0
+	if typeof(camera.visualOwnRadius) == "number" then
+		ownPx = math.max(camera.visualOwnRadius * (camera.zoom or 1), 0)
+	end
+	-- Ring sits just outside your blob, inside the HUD corners.
+	local ringX = math.clamp(math.max(viewport.X * 0.28, ownPx + 52), 120, math.max(cx - 88, 120))
+	local ringY = math.clamp(math.max(viewport.Y * 0.26, ownPx + 48), 96, math.max(cy - 88, 96))
 	local localId = Players.LocalPlayer.UserId
 	local used = 0
 	for _, person in self.socialMapPlayers or {} do
@@ -7440,11 +7507,11 @@ function Renderer:_refreshFriendArrows()
 		marker.Visible = true
 		marker.Position = UDim2.fromOffset(math.floor(ring.X + 0.5), math.floor(ring.Y + 0.5))
 		marker.Pointer.Rotation = math.deg(math.atan2(dx, -dy))
-		marker.Pointer.TextColor3 = if person.party == true
-			then Color3.fromRGB(255, 196, 64)
-			else Color3.fromRGB(90, 170, 255)
+		marker.Pointer.TextColor3 = Color3.fromRGB(255, 255, 255)
+		marker.Pointer.TextTransparency = 0.22
 		marker.Tag.Text = person.n or "Friend"
-		marker.Tag.TextColor3 = marker.Pointer.TextColor3
+		marker.Tag.TextColor3 = Color3.fromRGB(255, 255, 255)
+		marker.Tag.TextTransparency = 0.18
 	end
 	for i = used + 1, #self.friendArrowMarkers do
 		self.friendArrowMarkers[i].Visible = false
@@ -10006,14 +10073,14 @@ return MainMenu
 -- Start here when customizing the template. These values keep the current
 -- gameplay feel by default; change them deliberately and test in Studio.
 Config.World = {
-	Size = Vector2.new(5600, 5600), -- compact arena; 20% shorter on each axis
-	SpawnPadding = 220,
+	Size = Vector2.new(2800, 2800), -- half the previous 5600 arena
+	SpawnPadding = 110,
 }
 
 Config.DynamicWorld = {
 	BasePlayers = 6,
 	MaxScale = 1.75,
-	ClusterPadding = 1050,
+	ClusterPadding = 520,
 	ActiveCellMargin = 260,
 	ShrinkDelaySeconds = 35,
 	TargetHysteresis = 0.08,
