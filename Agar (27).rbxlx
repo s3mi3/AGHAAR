@@ -4209,16 +4209,22 @@ function Renderer:setLocalFrozen(frozen: boolean)
 	self.localFrozen = frozen == true
 	if self.localFrozen and not wasFrozen then
 		self.frozenSplitAim = nil
+		self.unfreezeGraceStartedAt = nil
+		for _, state in self.cellStates do
+			if state.isOwn then
+				state.splitVisualBoost = nil
+			end
+		end
 	end
 	-- Mark the moment we transitioned frozen -&gt; unfrozen so the
 	-- visual-separation resolver can ramp its strength/passes up
 	-- gradually instead of exploding overlapping cells apart the
 	-- instant the freeze releases.
 	if wasFrozen and not self.localFrozen then
-		self.unfreezeGraceStartedAt = os.clock()
-		-- One spring per packed split. Spamming freeze/unfreeze after
-		-- that would keep adding outward boost and fling cells away.
+		-- One spring + grace per packed split. Spamming freeze/unfreeze
+		-- after that re-armed the visual grace and made movement jitter.
 		if self.unfreezeReleaseSpent ~= true then
+			self.unfreezeGraceStartedAt = os.clock()
 			self:_applyLocalUnfreezeRelease()
 			self.unfreezeReleaseSpent = true
 		end
@@ -9721,12 +9727,13 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.4,
-	FrozenSplitHeldBoostScale = 1,
-	FrozenSplitLineMaxLength = 200,
-	FrozenSplitLineStepMin = 20,
-	FrozenSplitLineStepMax = 40,
-	FrozenSplitLineFatnessScale = 0.4,
+	FrozenSplitNudgeRadiusScale = 0.5,
+	FrozenSplitHeldBoostScale = 0,
+	FrozenSplitStackRadiusScale = 0.42,
+	FrozenSplitLineMaxLength = 280,
+	FrozenSplitLineStepMin = 26,
+	FrozenSplitLineStepMax = 52,
+	FrozenSplitLineFatnessScale = 0.28,
 	FrozenSplitLineStepRadiusScale = 0.12,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -14435,17 +14442,16 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 		cell.canRecombineAt = now + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = now + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
 		local childRadius = massToRadius(childMass)
-		-- Frozen cells do not move, but retain a reduced paused launch
-		-- that resumes when freeze is released.
+		-- Frozen splits park. Do not queue launch boost for unfreeze.
 		local childVelocity = if state.frozen
-			then self:_splitLaunchBoost(cell, dir, childMass)
-				* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
+			then self:_frozenSplitChildVelocity()
 			else self:_splitLaunchBoost(cell, dir, childMass, launchScale)
 		local spawnPos
 		if state.frozen then
+			cell.boost = Vector2.zero
 			-- Seed a few pixels along the shot. The parked packer then
 			-- keeps the old stack, just as a short line.
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.4, 0)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.5, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: R/E and multi-cell children are born on the
@@ -14482,7 +14488,7 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 	end
 end
 
-function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
+function GameService:_splitEveryCellIntoN(state, piecesPerCell: number, lockedAim: Vector2?)
 	-- Each currently-eligible cell splits into `piecesPerCell` equal
 	-- pieces. Total count multiplies by piecesPerCell per press (subject
 	-- to MaxCells and SplitMinMass per-piece minimum). Used by Q (=2)
@@ -14513,7 +14519,10 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		local newChildren = pieces - 1
 		local pieceMass = cell.mass / pieces
 		local pieceRadius = massToRadius(pieceMass)
-		local aim = splitAimForCell(state, cell)
+		local aim = lockedAim or splitAimForCell(state, cell)
+		if state.frozen and lockedAim then
+			aim = lockedAim
+		end
 		if state.frozen and (not state.frozenSplitAxis or state.frozenSplitAxis.Magnitude &lt; 0.001) then
 			state.frozenSplitAxis = aim
 		end
@@ -14521,6 +14530,10 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 		self:_setCellMass(cell, pieceMass)
 		cell.canRecombineAt = os.clock() + recombineDelayForMass(cell.mass)
 		cell.splitPushGraceUntil = os.clock() + math.max(Config.Cell.SplitPushGraceSeconds or 0, 0)
+		if state.frozen then
+			cell.boost = Vector2.zero
+			cell.splitAxis = aim
+		end
 
 		for i = 1, newChildren do
 			local fanSpread = math.max(Config.Cell.MultiSplitFanRadians or 0, 0)
@@ -14534,10 +14547,9 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			local childVelocity
 			local spawnPos
 			if state.frozen then
-				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
-					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.4, 0)
-				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
+				childVelocity = self:_frozenSplitChildVelocity()
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.5, 0)
+				spawnPos = self:_clampToWorld(cell.pos + dir * (frozenNudge * i), pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 				spawnPos = self:_adjustSpawnPositionForBarriers(
@@ -14564,11 +14576,19 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 end
 
 function GameService:_repeatSplitPlayer(state, generations: number)
-	-- Every eligible cell splits each generation, same locked launch
-	-- direction, up to MaxCells (32). Triple is 3 generations:
-	-- 1→2→4→8, then 8→16→32. Existing cells are not projected onto
-	-- the aim line; only new pieces get the cursor-facing boost.
-	local aim = splitAimForState(state)
+	-- Live R/E keep one locked launch so the train stays parallel.
+	-- Frozen separate blobs aim at the cursor so two parked cells can
+	-- split toward a point between them. A single frozen stack still
+	-- uses one axis so double/triple stays straight.
+	local aim
+	if state.frozen and not self:_frozenCellsAreOneStack(state) and #state.cells &gt; 1 then
+		aim = nil
+	else
+		aim = splitAimForState(state)
+		if state.frozen then
+			state.frozenSplitAxis = aim
+		end
+	end
 	for _ = 1, math.max(math.floor(generations), 1) do
 		if #state.cells &gt;= Config.Player.MaxCells then
 			break
@@ -14596,10 +14616,10 @@ function GameService:_splitToCellCount(state, targetCount: number)
 end
 
 function GameService:_doubleSplitPlayer(state)
-	-- First press from one cell → 3 pieces. After that, two all-cell
-	-- generations so 8→16→32 and other stacks keep multiplying.
+	-- First press from one cell → 3 equal pieces. After that, two
+	-- all-cell generations so 8→16→32 and other stacks keep multiplying.
 	if #state.cells &lt;= 1 then
-		self:_splitToCellCount(state, Config.Cell.ESplitTargetCells or 3)
+		self:_splitEveryCellIntoN(state, Config.Cell.ESplitTargetCells or 3, splitAimForState(state))
 		return
 	end
 	self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
@@ -14611,18 +14631,16 @@ end
 --    owner's cells.
 --  * _resolveSamePlayerPush skips them too, so cells cannot drift
 --    apart from mutual repulsion while parked.
---  * Sibling merges pause so freeze-feeding cannot swallow a piece.
---    Enemy eats and pellets still resolve.
+--  * Ready sibling pairs can still merge in place.
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
-function GameService:_separateFrozenSplitCells(state)
-	-- Keep the old frozen stack. Only slide that pile into a short
-	-- overlapping line so it is not one pixel. Spacing is a few
-	-- pixels, never a radius-sized launch.
-	if not state.frozen then
-		return
-	end
+function GameService:_frozenSplitChildVelocity()
+	-- A frozen split is a parked line, not a launched shot. Held
+	-- launch boost made unfreeze feel like leftover momentum.
+	return Vector2.zero
+end
 
+function GameService:_frozenCellsAreOneStack(state): boolean
 	local cells = {}
 	for _, id in state.cells do
 		local cell = self.cells[id]
@@ -14630,15 +14648,22 @@ function GameService:_separateFrozenSplitCells(state)
 			cells[#cells + 1] = cell
 		end
 	end
-	if #cells &lt; 2 then
-		return
+	if #cells &lt;= 1 then
+		return true
 	end
-	table.sort(cells, function(a, b)
-		return a.id &lt; b.id
-	end)
+	local groups = self:_frozenOverlapGroups(cells)
+	local groupCount = 0
+	for _root, _group in groups do
+		groupCount += 1
+		if groupCount &gt; 1 then
+			return false
+		end
+	end
+	return groupCount == 1
+end
 
-	local fallbackAim = state.frozenSplitAxis or splitAimForState(state)
-	local stackScale = math.max(Config.Cell.FrozenSplitStackRadiusScale or 0.98, 0.5)
+function GameService:_frozenOverlapGroups(cells)
+	local stackScale = math.clamp(Config.Cell.FrozenSplitStackRadiusScale or 0.42, 0.15, 1)
 	local n = #cells
 	local parent = {}
 	for i = 1, n do
@@ -14661,7 +14686,6 @@ function GameService:_separateFrozenSplitCells(state)
 			end
 		end
 	end
-
 	local groups = {}
 	for i = 1, n do
 		local root = find(i)
@@ -14672,11 +14696,36 @@ function GameService:_separateFrozenSplitCells(state)
 		end
 		group[#group + 1] = cells[i]
 	end
+	return groups
+end
 
-	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 20, 1)
-	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 40, stepMin)
-	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 200, stepMax)
-	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.4, 0, 1)
+function GameService:_separateFrozenSplitCells(state)
+	-- Keep the old frozen stack. Only slide that pile into a short
+	-- overlapping line so it is not one pixel. Spacing is a few
+	-- pixels, never a radius-sized launch.
+	if not state.frozen then
+		return
+	end
+
+	local cells = {}
+	for _, id in state.cells do
+		local cell = self.cells[id]
+		if cell then
+			cells[#cells + 1] = cell
+		end
+	end
+	if #cells &lt; 2 then
+		return
+	end
+	table.sort(cells, function(a, b)
+		return a.id &lt; b.id
+	end)
+
+	local groups = self:_frozenOverlapGroups(cells)
+	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 26, 1)
+	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 52, stepMin)
+	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 280, stepMax)
+	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.28, 0, 1)
 
 	for _, group in groups do
 		if #group &lt; 2 then
@@ -14695,9 +14744,12 @@ function GameService:_separateFrozenSplitCells(state)
 			radiusSum += cell.radius
 		end
 		local origin = Vector2.new(cx / totalMass, cy / totalMass)
-		local axis = Vec2.safeUnit(axisSum, fallbackAim)
+		-- Each overlapping group keeps its own aim so two frozen blobs
+		-- can split toward a cursor between them. A single stack falls
+		-- back to the locked freeze axis.
+		local axis = Vec2.safeUnit(axisSum, Vector2.zero)
 		if axis.Magnitude &lt; 0.001 then
-			axis = fallbackAim
+			axis = Vec2.safeUnit(state.frozenSplitAxis or splitAimForState(state), Vector2.new(1, 0))
 		end
 		table.sort(group, function(a, b)
 			local alongA = (a.pos - origin):Dot(axis)
@@ -14837,23 +14889,28 @@ function GameService:_toggleFreeze(state)
 			state.needsProgressionSave = true
 		end
 	else
-		-- Transitioning frozen -&gt; not frozen. Keep paused split
+		-- Transitioning frozen -&gt; not frozen. Keep paused live-split
 		-- momentum and spring overlapping pieces outward so they
 		-- don't ooze apart and then clump on the cursor. Only the
 		-- first unfreeze after a split spends that spring; extra
-		-- freeze/unfreeze taps must not keep flinging cells out.
+		-- freeze/unfreeze taps must not keep flinging cells out or
+		-- re-arm steer/grace (that jitter).
 		if state.unfreezeSpringSpent ~= true then
 			self:_applyUnfreezeRelease(state)
 			state.unfreezeSpringSpent = true
-		end
-		local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
-		if graceSeconds &gt; 0 then
-			state.unfreezeGraceUntil = now + graceSeconds
-			state.unfreezeGraceStart = now
-		end
-		local steerLock = math.max(cfg.UnfreezeSteerLockSeconds or 0, 0)
-		if steerLock &gt; 0 then
-			state.unfreezeSteerUntil = now + steerLock
+			local graceSeconds = math.max(cfg.UnfreezeGraceSeconds or 0, 0)
+			if graceSeconds &gt; 0 then
+				state.unfreezeGraceUntil = now + graceSeconds
+				state.unfreezeGraceStart = now
+			end
+			local steerLock = math.max(cfg.UnfreezeSteerLockSeconds or 0, 0)
+			if steerLock &gt; 0 then
+				state.unfreezeSteerUntil = now + steerLock
+			end
+		else
+			state.unfreezeGraceUntil = nil
+			state.unfreezeGraceStart = nil
+			state.unfreezeSteerUntil = nil
 		end
 	end
 
@@ -14861,6 +14918,9 @@ function GameService:_toggleFreeze(state)
 	if state.frozen then
 		state.frozenSince = now
 		state.frozenSplitAxis = nil
+		state.unfreezeGraceUntil = nil
+		state.unfreezeGraceStart = nil
+		state.unfreezeSteerUntil = nil
 	else
 		state.frozenSince = nil
 	end
@@ -15811,13 +15871,6 @@ function GameService:_handleEating()
 		local eater = self.cells[event.eaterId]
 		local target = event.kind == "cell" and self.cells[event.targetId] or nil
 		if eater and target and eater.ownerUserId == target.ownerUserId then
-			local owner = self.playersByUserId[eater.ownerUserId]
-			if owner and owner.frozen then
-				-- Freeze is for parking and feeding. Sibling swallow while
-				-- frozen pulled pieces around each other and ate the cell
-				-- you were trying to feed.
-				continue
-			end
 			event.mergeDistance = Vec2.distanceSquared(eater.pos, target.pos)
 				/ math.max((eater.radius + target.radius) ^ 2, 1)
 			event.mergeReadyAt = math.max(eater.canRecombineAt or 0, target.canRecombineAt or 0)
