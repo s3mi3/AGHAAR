@@ -4697,7 +4697,7 @@ function Renderer:setSnapshot(snapshot)
 	if typeof(snapshot.debugWorldResizeEnabled) == "boolean" then
 		self.debugWorldResizeEnabled = snapshot.debugWorldResizeEnabled == true
 	end
-	if typeof(snapshot.region) == "string" and snapshot.region ~= "" then
+	if typeof(snapshot.region) == "string" and snapshot.region ~= "" and snapshot.region ~= "—" then
 		self.serverRegion = snapshot.region
 	end
 	if typeof(snapshot.world) == "table" and typeof(snapshot.world[1]) == "number" and typeof(snapshot.world[2]) == "number" then
@@ -4831,10 +4831,10 @@ function Renderer:_mergePreyIsUnder(prey, eater): boolean
 	if typeof(eaterPos) ~= "Vector2" or typeof(preyPos) ~= "Vector2" then
 		return false
 	end
-	-- Prey is under the eater once its center is clearly inside the disc.
+	-- Prey is under the eater once its center is well inside the disc.
 	local remainingDist = (preyPos - eaterPos).Magnitude
 	local underRadius = math.max(prey.consumeEaterStartRadius or eater.mergeHoldRadius or eater.radius or 1, 1)
-	return remainingDist &lt;= underRadius * 0.38
+	return remainingDist &lt;= underRadius * 0.22
 end
 
 function Renderer:_snapHeldMergeMass(eater)
@@ -4844,8 +4844,7 @@ function Renderer:_snapHeldMergeMass(eater)
 	local goalRadius = eater.mergeGoalRadius or eater.targetRadius
 	local fromRadius = eater.mergeHoldRadius or eater.radius
 	if typeof(goalRadius) == "number" then
-		local pop = math.clamp(Config.Render.MassGainRadiusPop or 0.82, 0, 1)
-		eater.radius = fromRadius + (goalRadius - fromRadius) * pop
+		eater.radius = math.max(eater.radius or fromRadius, goalRadius)
 		eater.targetRadius = goalRadius
 		eater.radiusVelocity = 0
 		eater.feedGrow = false
@@ -4853,7 +4852,6 @@ function Renderer:_snapHeldMergeMass(eater)
 		eater.feedGoalRadius = nil
 	end
 	eater.visualMass = eater.mergeGoalMass or eater.mass
-	self:_exciteLiquidEdge(eater, os.clock(), 0.8)
 	self:_clearMergeVisualHold(eater)
 end
 
@@ -6031,32 +6029,25 @@ function Renderer:_stepEntityStates(states, dt: number)
 				local fade = progress * progress * (3 - 2 * progress)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
 			elseif state.consumeIsMerge or state.consumeHoldEater then
-				local pullStart = math.clamp(Config.Render.MergePullStart or 0.06, 0, 0.45)
-				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
-				if not state.consumeIsMerge then
-					pullStart = 0
-					shrinkStart = 0.18
-				end
-				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
-				local shrinkT = math.clamp((progress - shrinkStart) / math.max(1 - shrinkStart, 0.01), 0, 1)
-				-- Finish the slide before the last frames. Linear leftover
-				-- distance on a 1s timer crawled the final pixel.
-				local catchUp = if state.consumeIsMerge then 0.62 else 0.55
-				local pulled = math.clamp(pullT / catchUp, 0, 1)
-				local pull = pulled * pulled
-				local shrinkU = math.clamp(shrinkT / catchUp, 0, 1)
-				local shrink = shrinkU * shrinkU
+				-- One smooth swallow: ride the eater, slide in, and shrink
+				-- together. Finish before the last frames so it does not
+				-- crawl the final pixel.
+				local u = math.clamp(progress / 0.9, 0, 1)
+				local s = u * u * (3 - 2 * u)
 				local offset = state.consumeStartOffset
 				if typeof(offset) ~= "Vector2" then
 					local startPos = state.consumeStartPos or state.displayPos
 					offset = startPos - targetPos
 				end
-				-- Ride with the eater and slide into its center, instead of
-				-- tweening from a stale world point while the blob moves.
-				state.displayPos = targetPos + offset * (1 - pull)
+				state.displayPos = targetPos + offset * (1 - s)
 				local startRadius = state.consumeStartRadius or state.radius
-				state.radius = math.max(startRadius * (1 - shrink), 0)
-				if self:_mergePreyIsUnder(state, target) then
+				state.radius = math.max(startRadius * (1 - s), 0)
+				if target.mergeHoldRadius ~= nil then
+					local goal = target.mergeGoalRadius or target.targetRadius or target.mergeHoldRadius
+					target.radius = target.mergeHoldRadius + (goal - target.mergeHoldRadius) * s
+					target.radiusVelocity = 0
+				end
+				if s &gt;= 0.72 and self:_mergePreyIsUnder(state, target) then
 					self:_snapHeldMergeMass(target)
 					state.radius = 0
 				end
@@ -6247,6 +6238,8 @@ function Renderer:_ownCellsForVisualSeparation(now: number)
 		if state.isOwn
 			and state.confirmed
 			and not state.consumeUntil
+			and not state.mergeHoldRadius
+			and not state.mergePending
 			and not isSplitSpawnAnimating(state, now)
 			and (state.visualSeparateUntil or 0) &gt; now
 		then
@@ -6335,15 +6328,19 @@ function Renderer:_resolveOwnCellVisualSeparation()
 			passes = 1
 		end
 	end
+	if not overlapCap then
+		overlapCap = 10
+	end
 	for _ = 1, passes do
 		for i = 1, #cells - 1 do
 			local a = cells[i]
 			for j = i + 1, #cells do
 				local b = cells[j]
 				local delta = b.displayPos - a.displayPos
-				local minDist = (a.radius + b.radius) * scale
+				local slack = math.max(Config.Render.OwnCellVisualSeparationSlack or 0, 0)
+				local minDist = (a.radius + b.radius) * scale - slack
 				local distanceSquared = delta:Dot(delta)
-				if distanceSquared &lt; minDist * minDist then
+				if minDist &gt; 0.5 and distanceSquared &lt; minDist * minDist then
 					local dist = math.sqrt(distanceSquared)
 					local dir
 					if dist &gt; 0.001 then
@@ -6531,7 +6528,7 @@ function Renderer:_updateHud(dt: number)
 	end
 	self:_updateLabel(self.pingLabel, "lastPingText", self.localization:pingText(pingValue))
 	local region = self.serverRegion
-	if typeof(region) ~= "string" or region == "" then
+	if typeof(region) ~= "string" or region == "" or region == "—" then
 		region = "—"
 	end
 	self:_updateLabel(self.regionLabel, "lastRegionText", "Region " .. region)
@@ -6935,7 +6932,7 @@ end
 function Renderer:setSocialWorld(social)
 	self.socialLeaders = social and social.leaders or {}
 	self.socialMapPlayers = social and social.mapPlayers or {}
-	if social and typeof(social.region) == "string" and social.region ~= "" then
+	if social and typeof(social.region) == "string" and social.region ~= "" and social.region ~= "—" then
 		self.serverRegion = social.region
 	end
 	self:_refreshLeaderboard()
@@ -8016,6 +8013,7 @@ function MainMenu.new(playerGui, remotes, renderer, input, camera)
 			playing = false,
 			spectating = false,
 			spectateName = "",
+			spectateUserId = 0,
 			spectateUnlockIn = 0,
 			spawnNearEnabled = true,
 			friends = {},
@@ -8163,8 +8161,11 @@ function MainMenu:_buildPlayPage()
 
 	self.statusLabel = label(page, "", 14, MUTED, false)
 	self.statusLabel.Position = UDim2.fromOffset(0, 108)
-	self.statusLabel.Size = UDim2.new(1, 0, 0, 36)
+	self.statusLabel.Size = UDim2.new(1, 0, 0, 28)
 	self.statusLabel.TextWrapped = true
+
+	self.spectateList = self:_makeList(page, "Spectate a player", UDim2.new(1, 0, 1, -148), UDim2.fromOffset(0, 140))
+	self.lists.spectate = self.spectateList
 end
 
 function MainMenu:_buildSkinsPage()
@@ -8684,6 +8685,7 @@ function MainMenu:_makeList(parent, title, size, pos)
 	scroll.Parent = frame
 	local layout = Instance.new("UIListLayout")
 	layout.Padding = UDim.new(0, 4)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
 	layout.Parent = scroll
 	local pad = Instance.new("UIPadding")
 	pad.PaddingLeft = UDim.new(0, 8)
@@ -8694,7 +8696,7 @@ end
 
 function MainMenu:_clear(scroll)
 	for _, child in scroll:GetChildren() do
-		if child:IsA("TextButton") or child:IsA("Frame") then
+		if child:IsA("TextButton") or child:IsA("Frame") or child:IsA("TextLabel") then
 			child:Destroy()
 		end
 	end
@@ -8704,6 +8706,7 @@ function MainMenu:_row(parent, text, actions)
 	local row = Instance.new("Frame")
 	row.BackgroundTransparency = 1
 	row.Size = UDim2.new(1, 0, 0, 32)
+	row.LayoutOrder = #parent:GetChildren() + 1
 	row.Parent = parent
 	local l = label(row, text, 13, TEXT, false)
 	l.Size = UDim2.new(1, -120, 1, 0)
@@ -8941,6 +8944,9 @@ function MainMenu:handleUpdate(payload)
 		if typeof(payload.spectateName) == "string" then
 			self.social.spectateName = payload.spectateName
 		end
+		if typeof(payload.spectateUserId) == "number" then
+			self.social.spectateUserId = payload.spectateUserId
+		end
 		if typeof(payload.spectateUnlockIn) == "number" then
 			self.social.spectateUnlockIn = payload.spectateUnlockIn
 			self.spectateUnlockAt = os.clock() + payload.spectateUnlockIn
@@ -9162,6 +9168,37 @@ end
 
 function MainMenu:_refreshPlay()
 	self:_refreshLockLabel()
+	self:_refreshSpectateList()
+end
+
+function MainMenu:_refreshSpectateList()
+	if not self.spectateList then
+		return
+	end
+	self:_clear(self.spectateList)
+	local me = self.player.UserId
+	local watchingId = self.social.spectateUserId
+	local any = false
+	for _, person in self.social.serverPlayers or {} do
+		if person.u == me or person.playing ~= true then
+			continue
+		end
+		any = true
+		local watching = watchingId == person.u and self.social.playing ~= true
+		self:_row(self.spectateList, (if watching then "▶ " else "") .. (person.n or "Player"), {
+			{
+				"Watch",
+				function()
+					self:_fire({ action = "spectate", userId = person.u })
+				end,
+				if watching then ACCENT else Color3.fromRGB(200, 206, 214),
+			},
+		})
+	end
+	if not any then
+		local empty = label(self.spectateList, "Nobody is in the game yet.", 13, MUTED, false)
+		empty.Size = UDim2.new(1, 0, 0, 24)
+	end
 end
 
 function MainMenu:_personIsInMap(person): boolean
@@ -10530,8 +10567,9 @@ Config.Render = {
 	SplitVisualNestScale = 0.48,
 	SplitVisualParentRecoilShare = 0.1,
 	OwnCellVisualSeparationPasses = 1,
-	OwnCellVisualSeparationStrength = 0.75,
-	OwnCellVisualSeparationScale = 1.02,
+	OwnCellVisualSeparationStrength = 0.55,
+	OwnCellVisualSeparationScale = 1,
+	OwnCellVisualSeparationSlack = 4,
 	-- Lightweight whole-image flex: native rounded edges, no sliced textures.
 	-- Filtered reactive flex, capped below 4%; no pixel snapping or idle-mode switch.
 	LiquidEdgeEnabled = true,
@@ -10543,7 +10581,7 @@ Config.Render = {
 	SplitFlexStrength = 0.045,
 	-- Separate size response from position smoothing. Merges and eating
 	-- other cells pop; food and pellets ease in.
-	MassGainRadiusPop = 0.82,
+	MassGainRadiusPop = 1,
 	CellGrowthSharpness = 32,
 	FeedGrowthSeconds = 0.75,
 	CellShrinkSharpness = 24,
@@ -10605,10 +10643,10 @@ Config.Render = {
 	ConsumeAnimationSeconds = 0.22,
 	ConsumeAnimationSharpness = 18,
 	ConsumeFadeSeconds = 0.16,
-	-- Sibling swallow: the eaten cell rides the eater.
+	-- Sibling swallow: one smooth slide into the eater.
 	MergeAnimationSeconds = 1.0,
-	MergePullStart = 0.06,
-	MergeShrinkStart = 0.34,
+	MergePullStart = 0,
+	MergeShrinkStart = 0,
 	StaticCachePaddingPixels = 140,
 	StaticPositionTolerance = 2,
 	FoodColor = Color3.fromRGB(90, 220, 120),
@@ -18202,6 +18240,7 @@ function GameService:_socialPayload(state)
 		playing = state.playing == true and self:_isPlaying(state),
 		spectating = not self:_isPlaying(state),
 		spectateName = spectateTarget and self:_displayNameForState(spectateTarget) or "",
+		spectateUserId = spectateTarget and spectateTarget.userId or 0,
 		spectateUnlockIn = math.max((state.spectateUnlockAt or 0) - now, 0),
 		spawnNearEnabled = state.spawnNearEnabled ~= false,
 		minimapEnabled = state.minimapEnabled ~= false,
@@ -18223,15 +18262,28 @@ function GameService:_socialPayload(state)
 end
 
 function GameService:_serverRegionLabel(): string
-	if typeof(self.serverRegion) == "string" and self.serverRegion ~= "" then
+	if typeof(self.serverRegion) == "string" and self.serverRegion ~= "" and self.serverRegion ~= "—" then
 		return self.serverRegion
 	end
-	return "—"
+	return ""
+end
+
+function GameService:_setResolvedRegion(label: string): boolean
+	if typeof(label) ~= "string" or label == "" or label == "—" then
+		return false
+	end
+	if self.serverRegion == label then
+		return true
+	end
+	self.serverRegion = label
+	self:_broadcastSocial()
+	return true
 end
 
 function GameService:_resolveServerRegion()
-	-- Best-effort datacenter country from the server's egress. Shown next
-	-- to mass/ping so players know which region they connected to.
+	pcall(function()
+		HttpService.HttpEnabled = true
+	end)
 	local names = {
 		US = "US",
 		CA = "US",
@@ -18248,14 +18300,66 @@ function GameService:_resolveServerRegion()
 		HK = "HK",
 		KR = "KR",
 	}
-	local ok, body = pcall(function()
-		return HttpService:GetAsync("https://www.cloudflare.com/cdn-cgi/trace")
-	end)
-	if ok and typeof(body) == "string" then
-		local loc = string.match(body, "loc=([A-Z][A-Z])")
+	local colos = {
+		IAD = "US-East",
+		EWR = "US-East",
+		ATL = "US-East",
+		ORD = "US-Central",
+		DFW = "US-Central",
+		LAX = "US-West",
+		SJC = "US-West",
+		SEA = "US-West",
+		YYZ = "US-East",
+		YVR = "US-West",
+		LHR = "EU-West",
+		AMS = "EU-West",
+		DUB = "EU-West",
+		CDG = "EU-West",
+		FRA = "EU-Central",
+		MAD = "EU-West",
+		NRT = "JP",
+		KIX = "JP",
+		SIN = "SG",
+		SYD = "AU",
+		MEL = "AU",
+		GRU = "BR",
+		ICN = "KR",
+		HKG = "HK",
+		BOM = "IN",
+		DEL = "IN",
+	}
+	local function applyBody(body): boolean
+		if typeof(body) ~= "string" then
+			return false
+		end
+		local colo = string.match(body, "colo=([A-Z]+)")
+		if colo and colos[colo] then
+			return self:_setResolvedRegion(colos[colo])
+		end
+		local loc = string.match(body, "[Ll]oc=([A-Za-z][A-Za-z])")
 		if loc then
-			self.serverRegion = names[loc] or loc
-			self:_broadcastSocial()
+			loc = string.upper(loc)
+			return self:_setResolvedRegion(names[loc] or loc)
+		end
+		local country = string.match(body, '"countryCode"%s*:%s*"([A-Za-z][A-Za-z])"')
+			or string.match(body, '"country"%s*:%s*"([A-Za-z][A-Za-z])"')
+		if country then
+			country = string.upper(country)
+			return self:_setResolvedRegion(names[country] or country)
+		end
+		return false
+	end
+	local urls = {
+		"https://www.cloudflare.com/cdn-cgi/trace",
+		"https://cloudflare.com/cdn-cgi/trace",
+		"https://ipinfo.io/json",
+		"https://ip-api.com/json/?fields=status,countryCode",
+	}
+	for _, url in urls do
+		local ok, body = pcall(function()
+			return HttpService:GetAsync(url)
+		end)
+		if ok and applyBody(body) then
 			return
 		end
 	end
@@ -18636,14 +18740,20 @@ function GameService:_handleSocialAction(player: Player, payload)
 		return
 	elseif action == "spectate" then
 		if self:_isPlaying(state) then
-			if self:_enterSpectate(state, false) then
-				self:_sendSocial(state, { kind = "hello", keepMenuClosed = true })
-				self:_broadcastSocial()
+			if not self:_enterSpectate(state, false) then
+				return
 			end
-		else
-			self:_followSpectateTarget(state)
-			self:_sendSocial(state, { kind = "hello", keepMenuClosed = true })
 		end
+		if target and self:_isPlaying(target) and target.userId ~= state.userId then
+			state.spectateTargetId = target.userId
+		elseif targetId then
+			state.socialMessage = "That player is not in the game"
+			self:_sendSocial(state)
+			return
+		end
+		self:_followSpectateTarget(state)
+		self:_sendSocial(state, { kind = "hello", keepMenuClosed = true })
+		self:_broadcastSocial()
 		return
 	elseif action == "menuOpen" then
 		if state.playing == true then
@@ -19001,7 +19111,7 @@ service:start()
   </Item>
   <Item class="HttpService" referent="RBX7A728D1EF574445EB006D23AFD99D619">
     <Properties>
-      <bool name="HttpEnabled">false</bool>
+      <bool name="HttpEnabled">true</bool>
       <BinaryString name="AttributesSerialize">
       </BinaryString>
       <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
