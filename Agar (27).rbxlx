@@ -9548,7 +9548,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.08,
+	FrozenSplitNudgeRadiusScale = 0.2,
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -14202,7 +14202,7 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 		if state.frozen then
 			-- Seed a few pixels along the shot. The parked packer then
 			-- keeps the old stack, just as a short line.
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.08, 0)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.2, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14283,7 +14283,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.08, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.2, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14420,10 +14420,10 @@ function GameService:_separateFrozenSplitCells(state)
 		group[#group + 1] = cells[i]
 	end
 
-	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 2, 1)
-	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 5, stepMin)
-	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 16, stepMax)
-	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.05, 0, 0.2)
+	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 6, 1)
+	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 12, stepMin)
+	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 48, stepMax)
+	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.1, 0, 0.25)
 
 	for _, group in groups do
 		if #group &lt; 2 then
@@ -14456,7 +14456,7 @@ function GameService:_separateFrozenSplitCells(state)
 		end)
 
 		local avgRadius = radiusSum / #group
-		local step = math.clamp(avgRadius * 0.045, stepMin, stepMax)
+		local step = math.clamp(avgRadius * 0.12, stepMin, stepMax)
 		if #group &gt; 1 then
 			step = math.min(step, maxLine / (#group - 1))
 		end
