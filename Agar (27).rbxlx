@@ -6852,7 +6852,7 @@ function Renderer:render(dt: number?)
 	end
 
 	self:_updateHud(dt)
-	self:_refreshFriendArrows()
+	self:_refreshFriendArrows(dt)
 
 	self.foodPool:finish()
 	self.ejectedPool:finish()
@@ -7445,7 +7445,7 @@ function Renderer:_hideFriendArrows()
 	end
 end
 
-function Renderer:_refreshFriendArrows()
+function Renderer:_refreshFriendArrows(dt: number?)
 	if not self.friendArrowLayer or self.friendArrowsEnabled == false then
 		if self.friendArrowGui then
 			self.friendArrowGui.Enabled = false
@@ -7466,17 +7466,29 @@ function Renderer:_refreshFriendArrows()
 		self:_hideFriendArrows()
 		return
 	end
+	dt = math.clamp(dt or 1 / 60, 0, 0.1)
 	local edgePad = 36
 	local cx, cy = viewport.X * 0.5, viewport.Y * 0.5
-	local ownPx = 0
-	if typeof(camera.visualOwnRadius) == "number" then
-		ownPx = math.max(camera.visualOwnRadius * (camera.zoom or 1), 0)
+	-- Fixed screen ring so a split cannot yank arrows by changing zoom
+	-- or the summed cell radius.
+	local ringX = math.clamp(viewport.X * 0.30, 120, math.max(cx - 88, 120))
+	local ringY = math.clamp(viewport.Y * 0.28, 96, math.max(cy - 88, 96))
+	local origin = self.predictedOwnCenter
+	if typeof(origin) ~= "Vector2" then
+		origin = camera.center
 	end
-	-- Ring sits just outside your blob, inside the HUD corners.
-	local ringX = math.clamp(math.max(viewport.X * 0.28, ownPx + 52), 120, math.max(cx - 88, 120))
-	local ringY = math.clamp(math.max(viewport.Y * 0.26, ownPx + 48), 96, math.max(cy - 88, 96))
+	local originAlpha = 1 - math.exp(-dt * 4.5)
+	if typeof(self.arrowOrigin) ~= "Vector2" then
+		self.arrowOrigin = origin
+	else
+		self.arrowOrigin = self.arrowOrigin:Lerp(origin, originAlpha)
+	end
+	self.friendArrowSmooth = self.friendArrowSmooth or {}
+	local posAlpha = 1 - math.exp(-dt * 6.5)
+	local rotAlpha = 1 - math.exp(-dt * 7)
 	local localId = Players.LocalPlayer.UserId
 	local used = 0
+	local seen = {}
 	for _, person in self.socialMapPlayers or {} do
 		if person.u == localId then
 			continue
@@ -7485,30 +7497,50 @@ function Renderer:_refreshFriendArrows()
 			continue
 		end
 		local worldPos = Vector2.new(person.x or 0, person.y or 0)
-		local screen = camera:worldToScreen(worldPos)
-		local onScreen = screen.X &gt;= edgePad
-			and screen.X &lt;= viewport.X - edgePad
-			and screen.Y &gt;= edgePad
-			and screen.Y &lt;= viewport.Y - edgePad
+		local liveScreen = camera:worldToScreen(worldPos)
+		local onScreen = liveScreen.X &gt;= edgePad
+			and liveScreen.X &lt;= viewport.X - edgePad
+			and liveScreen.Y &gt;= edgePad
+			and liveScreen.Y &lt;= viewport.Y - edgePad
+		local dx = worldPos.X - self.arrowOrigin.X
+		local dy = worldPos.Y - self.arrowOrigin.Y
+		if math.abs(dx) &lt; 0.001 and math.abs(dy) &lt; 0.001 then
+			dx = 1
+		end
+		local t = 1 / math.sqrt((dx * dx) / (ringX * ringX) + (dy * dy) / (ringY * ringY))
+		local targetX = cx + dx * t
+		local targetY = cy + dy * t
+		local targetRot = math.deg(math.atan2(dx, -dy))
+		local uid = person.u
+		local smooth = self.friendArrowSmooth[uid]
+		if not smooth then
+			smooth = { x = targetX, y = targetY, rot = targetRot }
+			self.friendArrowSmooth[uid] = smooth
+		else
+			smooth.x += (targetX - smooth.x) * posAlpha
+			smooth.y += (targetY - smooth.y) * posAlpha
+			local dRot = (targetRot - smooth.rot + 180) % 360 - 180
+			smooth.rot += dRot * rotAlpha
+		end
+		seen[uid] = true
 		if onScreen then
 			continue
 		end
 		used += 1
 		local marker = self:_ensureFriendArrow(used)
-		local dx, dy = screen.X - cx, screen.Y - cy
-		if math.abs(dx) &lt; 0.001 and math.abs(dy) &lt; 0.001 then
-			dx = 1
-		end
-		local t = 1 / math.sqrt((dx * dx) / (ringX * ringX) + (dy * dy) / (ringY * ringY))
-		local ring = Vector2.new(cx + dx * t, cy + dy * t)
 		marker.Visible = true
-		marker.Position = UDim2.fromOffset(math.floor(ring.X + 0.5), math.floor(ring.Y + 0.5))
-		marker.Pointer.Rotation = math.deg(math.atan2(dx, -dy))
+		marker.Position = UDim2.fromOffset(math.floor(smooth.x + 0.5), math.floor(smooth.y + 0.5))
+		marker.Pointer.Rotation = smooth.rot
 		marker.Pointer.TextColor3 = Color3.fromRGB(255, 255, 255)
 		marker.Pointer.TextTransparency = 0.22
 		marker.Tag.Text = person.n or "Friend"
 		marker.Tag.TextColor3 = Color3.fromRGB(255, 255, 255)
 		marker.Tag.TextTransparency = 0.18
+	end
+	for uid in self.friendArrowSmooth do
+		if not seen[uid] then
+			self.friendArrowSmooth[uid] = nil
+		end
 	end
 	for i = used + 1, #self.friendArrowMarkers do
 		self.friendArrowMarkers[i].Visible = false
