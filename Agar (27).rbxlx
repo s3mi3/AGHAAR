@@ -5367,6 +5367,19 @@ function Renderer:_drawGrid()
 	local origin = self.camera:worldToScreen(Vector2.zero)
 	local startX = origin.X % spacing
 	local startY = origin.Y % spacing
+	if self.lastGridStartX == startX
+		and self.lastGridStartY == startY
+		and self.lastGridSpacing == spacing
+		and self.lastGridViewportX == viewport.X
+		and self.lastGridViewportY == viewport.Y
+	then
+		return
+	end
+	self.lastGridStartX = startX
+	self.lastGridStartY = startY
+	self.lastGridSpacing = spacing
+	self.lastGridViewportX = viewport.X
+	self.lastGridViewportY = viewport.Y
 	local lineIndex = 1
 
 	for x = startX, viewport.X + spacing, spacing do
@@ -6059,7 +6072,9 @@ function Renderer:_stepEntityStates(states, dt: number)
 end
 
 function Renderer:_resolveEjectedVisualCollisions(dt: number)
-	if Config.Render.EjectedVisualCollisionEnabled == false then
+	if Config.Render.EjectedVisualCollisionEnabled == false
+		or (self.ownMoveCellCount or 0) &gt;= 16
+	then
 		for _, state in self.ejectedStates do
 			state.renderPos = nil
 			state.ejectedVisualOffset = nil
@@ -6332,7 +6347,7 @@ function Renderer:step(dt: number?)
 	self.clusterMoveRadius = math.sqrt(totalMass) * Config.Cell.RadiusScale
 	self.clusterMaxSpeed = if count &gt; 1 and maxMass &gt; 0 then speedForMass(maxMass) else nil
 	self.ownMoveCellCount = count
-	self:_stepEntityStates(self.foodStates, dt)
+	-- Food is static. Interpolating every pellet during split wars is wasted work.
 	self:_stepEntityStates(self.ejectedStates, dt)
 	self:_resolveEjectedVisualCollisions(dt)
 	self:_stepEntityStates(self.virusStates, dt)
@@ -6536,6 +6551,8 @@ function Renderer:_prepareLiquidEdge(state, id: number, now: number): number
 	state.liquidLastTime = now
 	state.liquidLastPos = pos
 	if config.LiquidEdgeEnabled == false
+		or state.isOwn ~= true
+		or (self.ownMoveCellCount or 0) &gt;= 12
 		or state.radius * self.camera.zoom &lt;= (config.LiquidEdgeMinPixels or 14)
 		or (self.pingMs or 0) &gt; 160
 	then
@@ -6626,7 +6643,6 @@ function Renderer:render(dt: number?)
 	local liquidTime = os.clock()
 	self:_drawGrid()
 	self:_drawWorldBorder()
-	local ownEatCandidates = self:_ownCellEatCandidates()
 
 	self.foodPool:begin()
 	self.ejectedPool:begin()
@@ -6681,7 +6697,12 @@ function Renderer:render(dt: number?)
 	for id, state in self.cellStates do
 		-- Cull using the maximum deformation before doing any effect/artwork work.
 		if self.camera:visible(state.displayPos, state.radius * 1.06) then
-			self:_prepareLiquidEdge(state, id, liquidTime)
+			if state.isOwn and (self.ownMoveCellCount or 0) &lt; 12 then
+				self:_prepareLiquidEdge(state, id, liquidTime)
+			elseif state.drawOptions then
+				state.drawOptions.liquidEnabled = false
+				state.drawOptions.liquidDeformation = 0
+			end
 			local screen = self.camera:worldToScreen(state.displayPos)
 			local zoomed = state.radius * self.camera.zoom
 			-- Swallowing cells keep world size so the last pixel of a merge
@@ -10673,7 +10694,13 @@ function SpatialHash.new(cellSize: number)
 end
 
 function SpatialHash:clear()
-	table.clear(self.buckets)
+	-- Keep bucket tables. Destroying them every rebuild forced the GC
+	-- to churn when many split cells moved each tick.
+	for _, column in self.buckets do
+		for _, bucket in column do
+			table.clear(bucket)
+		end
+	end
 end
 
 function SpatialHash:_bucket(cx: number, cy: number)
@@ -10718,14 +10745,16 @@ function SpatialHash:query(pos: Vector2, radius: number, out: { number }?, seenS
 	local minX, maxX, minY, maxY = self:_range(pos, radius)
 	for cx = minX, maxX do
 		local column = self.buckets[cx]
-		for cy = minY, maxY do
-			local bucket = column and column[cy]
-			if bucket then
-				for i = 1, #bucket do
-					local id = bucket[i]
-					if not seen[id] then
-						seen[id] = true
-						result[#result + 1] = id
+		if column then
+			for cy = minY, maxY do
+				local bucket = column[cy]
+				if bucket then
+					for i = 1, #bucket do
+						local id = bucket[i]
+						if not seen[id] then
+							seen[id] = true
+							result[#result + 1] = id
+						end
 					end
 				end
 			end
@@ -12282,6 +12311,9 @@ function GameService.new()
 	self.cellsScratch = {}
 	self.eatEventsScratch = {}
 	self.ejectedCollisionPairsScratch = {}
+	self.ownedCellsScratch = {}
+	self.pushBudgetScratch = {}
+	self.movingGridsDirty = true
 	self.rng = Random.new()
 	self.running = false
 	self.parties = {}
@@ -12761,6 +12793,7 @@ function GameService:_runLoop()
 				local buckets = math.max(Config.Network.StaticRefreshBuckets or 1, 1)
 				self.staticRefreshBucket = (self.staticRefreshBucket % buckets) + 1
 			end
+			self:_ensureMovingGrids()
 			self:_sendSnapshots(includeStatics)
 			netAccumulator = 0
 			if includeStatics then
@@ -14595,7 +14628,6 @@ function GameService:_step(dt: number)
 	self:_rebuildStaticGridsIfDirty()
 	self:_moveBarriers(dt)
 	self:_rebuildCellGrid()
-	self:_rebuildStaticGridsIfDirty()
 	self:_resolveSamePlayerPush(dt)
 	self:_resolveBarrierPush()
 	self:_rebuildCellAndEjectedGrids()
@@ -14608,7 +14640,9 @@ function GameService:_step(dt: number)
 		self.staticOverlapAccumulator = 0
 		self:_resolveStaticCircleOverlaps()
 	end
-	self:_rebuildMovingGrids()
+	-- Snapshot send rebuilds moving grids once per network tick instead
+	-- of after every sim step. Split wars were rebuilding them 3x/tick.
+	self.movingGridsDirty = true
 	self:_updatePlayerCenters()
 end
 
@@ -16076,6 +16110,14 @@ function GameService:_rebuildMovingGrids()
 	self:_rebuildEjectedGrid()
 	self:_rebuildSpawnerGrid()
 	self:_rebuildBarrierGrid()
+	self.movingGridsDirty = false
+end
+
+function GameService:_ensureMovingGrids()
+	if self.movingGridsDirty == false then
+		return
+	end
+	self:_rebuildMovingGrids()
 end
 
 function GameService:_rebuildStaticGridsIfDirty()
@@ -16157,30 +16199,41 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 			passes = gracePasses
 		end
 
-		local pushBudget = {}
-		for _, id in state.cells do pushBudget[id] = maxDisplacement end
-		for _ = 1, passes do
-			local ownedCells = {}
-			for i = 1, #state.cells do
-				local cell = self.cells[state.cells[i]]
-				if cell then
-					ownedCells[#ownedCells + 1] = cell
-				end
+		local pushBudget = self.pushBudgetScratch
+		table.clear(pushBudget)
+		for _, id in state.cells do
+			pushBudget[id] = maxDisplacement
+		end
+		local ownedCells = self.ownedCellsScratch
+		table.clear(ownedCells)
+		for i = 1, #state.cells do
+			local cell = self.cells[state.cells[i]]
+			if cell then
+				ownedCells[#ownedCells + 1] = cell
 			end
-			table.sort(ownedCells, function(a, b) return a.id &lt; b.id end)
-
+		end
+		if #ownedCells &lt; 2 then
+			continue
+		end
+		table.sort(ownedCells, function(a, b)
+			return a.id &lt; b.id
+		end)
+		local launchBias = math.max(Config.Cell.SplitLaunchBiasSeconds or 0.4, 0)
+		local splitOverlapStep = math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
+		for _ = 1, passes do
 			for i = 1, #ownedCells - 1 do
 				local a = ownedCells[i]
 				for j = i + 1, #ownedCells do
 					local b = ownedCells[j]
-					local delta = b.pos - a.pos
-					local dist = delta.Magnitude
+					local dx = b.pos.X - a.pos.X
+					local dy = b.pos.Y - a.pos.Y
+					local distSq = dx * dx + dy * dy
 					local minDist = a.radius + b.radius
-					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
-						local graceUntil = math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0)
-						local inSplitGrace = now &lt; graceUntil
-						local launchBias = math.max(Config.Cell.SplitLaunchBiasSeconds or 0.4, 0)
-						local inLaunch = now &lt; graceUntil + launchBias
+					if distSq &lt; minDist * minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
+						local dist = math.sqrt(distSq)
+						local pairGraceUntil = math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0)
+						local inSplitGrace = now &lt; pairGraceUntil
+						local inLaunch = now &lt; pairGraceUntil + launchBias
 						local childOfPair = if a.splitParentId == b.id then a
 							elseif b.splitParentId == a.id then b
 							else nil
@@ -16193,7 +16246,7 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 								state.input.aim
 							)
 						)
-						if (b.pos - a.pos):Dot(axis) &lt; 0 then
+						if dx * axis.X + dy * axis.Y &lt; 0 then
 							axis = -axis
 						end
 						local dir
@@ -16206,15 +16259,12 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 								dist = 0
 							end
 						else
-							dir = if dist &gt; 0.001 then delta / dist else axis
+							dir = if dist &gt; 0.001 then Vector2.new(dx / dist, dy / dist) else axis
 						end
 
 						local pairOverlapCap = overlapCap
 						if inSplitGrace then
-							pairOverlapCap = math.min(
-								pairOverlapCap,
-								math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
-							)
+							pairOverlapCap = math.min(pairOverlapCap, splitOverlapStep)
 						end
 						local overlap = math.min((minDist - dist) * pushStrength, pairOverlapCap)
 						local totalMass = math.max(a.mass + b.mass, 1)
@@ -16282,6 +16332,10 @@ end
 function GameService:_handleEating()
 	local events = self.eatEventsScratch
 	table.clear(events)
+	self.eatMaxCellRadius = self:_maxEntityRadius(self.cells, 0)
+	self.eatMaxVirusRadius = virusRadius()
+	self.eatMinVirusMass = (Config.Virus.Mass or 800) * (Config.Cell.MinEatRatio or 1.25)
+	self.eatHasEjected = next(self.ejected) ~= nil
 
 	for _, cell in self.cells do
 		self:_queueEatEventsForCell(cell, events)
@@ -16484,58 +16538,31 @@ function GameService:_queueEatEventsForCell(cell, events)
 
 	-- Include one maximum pellet step so a small, fast pellet cannot cross
 	-- entirely through a cell between simulation ticks.
-	local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
-	local ejectedQueryRadius = cell.radius
-		+ Config.Ejected.Radius
-		+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
-		+ ejectedStepDistance
-	local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
-	for _, id in ejectedCandidates do
-		local ejected = self.ejected[id]
-		local ownerDelay = Config.Ejected.OwnerReeatDelay or 0.75
-		-- Only the SOURCE cell has to wait OwnerReeatDelay. Sibling cells
-		-- (feeding target) may eat immediately. Legacy pellets without
-		-- sourceCellId fall back to the old whole-owner delay.
-		local ejectedIsSelfSource = ejected and (
-			ejected.sourceCellId == cell.id
-			or (ejected.sourceCellId == nil and ejected.ownerUserId == cell.ownerUserId)
-		)
-		if ejected
-			and ownCellMayCollectOwnEjected(cell, ejected, now)
-			and (not ejectedIsSelfSource or now - ejected.spawnedAt &gt; ownerDelay)
-			and canCollectEjected(cell, ejected)
-		then
-			if queuedEjected then
-				queuedEjected[id] = true
-			end
-			potentialMass += self:_ejectedMassGain(cell, ejected, "selfFeed")
-			events[#events + 1] = {
-				kind = "ejected",
-				kindRank = 2,
-				eaterId = cell.id,
-				eaterMass = cell.mass,
-				targetId = id,
-			}
-		end
-	end
-	if sweepStart and sweepEnd and sweepDistance then
-		local sweepCenter = (sweepStart + sweepEnd) * 0.5
-		local sweepQueryRadius = sweepDistance * 0.5 + cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
-		local sweptEjectedCandidates = self.ejectedGrid:query(sweepCenter, sweepQueryRadius, self.queryScratch, self.querySeenScratch)
-		for _, id in sweptEjectedCandidates do
+	if self.eatHasEjected ~= false then
+		local ejectedStepDistance = Config.Ejected.Speed / math.max(Config.Simulation.Hz, 1) * 1.5
+		local ejectedQueryRadius = cell.radius
+			+ Config.Ejected.Radius
+			+ math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+			+ ejectedStepDistance
+		local ejectedCandidates = self.ejectedGrid:query(cell.pos, ejectedQueryRadius, self.queryScratch, self.querySeenScratch)
+		for _, id in ejectedCandidates do
 			local ejected = self.ejected[id]
 			local ownerDelay = Config.Ejected.OwnerReeatDelay or 0.75
+			-- Only the SOURCE cell has to wait OwnerReeatDelay. Sibling cells
+			-- (feeding target) may eat immediately. Legacy pellets without
+			-- sourceCellId fall back to the old whole-owner delay.
 			local ejectedIsSelfSource = ejected and (
 				ejected.sourceCellId == cell.id
 				or (ejected.sourceCellId == nil and ejected.ownerUserId == cell.ownerUserId)
 			)
 			if ejected
-				and not queuedEjected[id]
 				and ownCellMayCollectOwnEjected(cell, ejected, now)
 				and (not ejectedIsSelfSource or now - ejected.spawnedAt &gt; ownerDelay)
-				and self:_canCollectEjectedAlongSegment(cell, ejected, sweepStart, sweepEnd)
+				and canCollectEjected(cell, ejected)
 			then
-				queuedEjected[id] = true
+				if queuedEjected then
+					queuedEjected[id] = true
+				end
 				potentialMass += self:_ejectedMassGain(cell, ejected, "selfFeed")
 				events[#events + 1] = {
 					kind = "ejected",
@@ -16543,58 +16570,92 @@ function GameService:_queueEatEventsForCell(cell, events)
 					eaterId = cell.id,
 					eaterMass = cell.mass,
 					targetId = id,
-					swept = true,
-					sweepStartPos = sweepStart,
-					sweepEndPos = sweepEnd,
 				}
+			end
+		end
+		if sweepStart and sweepEnd and sweepDistance then
+			local sweepCenter = (sweepStart + sweepEnd) * 0.5
+			local sweepQueryRadius = sweepDistance * 0.5 + cell.radius + Config.Ejected.Radius + math.max(Config.Ejected.TouchPickupPadding or 0, 0)
+			local sweptEjectedCandidates = self.ejectedGrid:query(sweepCenter, sweepQueryRadius, self.queryScratch, self.querySeenScratch)
+			for _, id in sweptEjectedCandidates do
+				local ejected = self.ejected[id]
+				local ownerDelay = Config.Ejected.OwnerReeatDelay or 0.75
+				local ejectedIsSelfSource = ejected and (
+					ejected.sourceCellId == cell.id
+					or (ejected.sourceCellId == nil and ejected.ownerUserId == cell.ownerUserId)
+				)
+				if ejected
+					and not queuedEjected[id]
+					and ownCellMayCollectOwnEjected(cell, ejected, now)
+					and (not ejectedIsSelfSource or now - ejected.spawnedAt &gt; ownerDelay)
+					and self:_canCollectEjectedAlongSegment(cell, ejected, sweepStart, sweepEnd)
+				then
+					queuedEjected[id] = true
+					potentialMass += self:_ejectedMassGain(cell, ejected, "selfFeed")
+					events[#events + 1] = {
+						kind = "ejected",
+						kindRank = 2,
+						eaterId = cell.id,
+						eaterMass = cell.mass,
+						targetId = id,
+						swept = true,
+						sweepStartPos = sweepStart,
+						sweepEndPos = sweepEnd,
+					}
+				end
 			end
 		end
 	end
 
 	local potentialRadius = massToRadius(potentialMass)
-	local maxVirusRadius = virusRadius()
-	local virusCandidates = self.virusGrid:query(cell.pos, potentialRadius + maxVirusRadius, self.queryScratch, self.querySeenScratch)
-	for _, id in virusCandidates do
-		local virus = self.viruses[id]
-		if virus and canEatVirusAt(cell, virus, potentialMass, potentialRadius) then
-			if queuedViruses then
-				queuedViruses[id] = true
-			end
-			events[#events + 1] = {
-				kind = "virus",
-				kindRank = 3,
-				eaterId = cell.id,
-				eaterMass = cell.mass,
-				targetId = id,
-			}
-		end
-	end
-	if sweepStart and sweepEnd and sweepDistance then
-		local sweepCenter = (sweepStart + sweepEnd) * 0.5
-		local sweepQueryRadius = sweepDistance * 0.5 + potentialRadius + maxVirusRadius
-		local sweptVirusCandidates = self.virusGrid:query(sweepCenter, sweepQueryRadius, self.queryScratch, self.querySeenScratch)
-		for _, id in sweptVirusCandidates do
+	local minVirusEatMass = self.eatMinVirusMass or ((Config.Virus.Mass or 800) * (Config.Cell.MinEatRatio or 1.25))
+	if potentialMass &gt;= minVirusEatMass then
+		local maxVirusRadius = self.eatMaxVirusRadius or virusRadius()
+		local virusCandidates = self.virusGrid:query(cell.pos, potentialRadius + maxVirusRadius, self.queryScratch, self.querySeenScratch)
+		for _, id in virusCandidates do
 			local virus = self.viruses[id]
-			if virus
-				and not queuedViruses[id]
-				and self:_canEatVirusAlongSegment(cell, virus, sweepStart, sweepEnd, potentialMass, potentialRadius)
-			then
-				queuedViruses[id] = true
+			if virus and canEatVirusAt(cell, virus, potentialMass, potentialRadius) then
+				if queuedViruses then
+					queuedViruses[id] = true
+				end
 				events[#events + 1] = {
 					kind = "virus",
 					kindRank = 3,
 					eaterId = cell.id,
 					eaterMass = cell.mass,
 					targetId = id,
-					swept = true,
-					sweepStartPos = sweepStart,
-					sweepEndPos = sweepEnd,
 				}
+			end
+		end
+		if sweepStart and sweepEnd and sweepDistance then
+			local sweepCenter = (sweepStart + sweepEnd) * 0.5
+			local sweepQueryRadius = sweepDistance * 0.5 + potentialRadius + maxVirusRadius
+			local sweptVirusCandidates = self.virusGrid:query(sweepCenter, sweepQueryRadius, self.queryScratch, self.querySeenScratch)
+			for _, id in sweptVirusCandidates do
+				local virus = self.viruses[id]
+				if virus
+					and not queuedViruses[id]
+					and self:_canEatVirusAlongSegment(cell, virus, sweepStart, sweepEnd, potentialMass, potentialRadius)
+				then
+					queuedViruses[id] = true
+					events[#events + 1] = {
+						kind = "virus",
+						kindRank = 3,
+						eaterId = cell.id,
+						eaterMass = cell.mass,
+						targetId = id,
+						swept = true,
+						sweepStartPos = sweepStart,
+						sweepEndPos = sweepEnd,
+					}
+				end
 			end
 		end
 	end
 
-	local cellCandidates = self.cellGrid:query(cell.pos, potentialRadius * 2, self.queryScratch, self.querySeenScratch)
+	local maxCellRadius = self.eatMaxCellRadius or potentialRadius
+	local cellQueryRadius = math.min(potentialRadius * 2, potentialRadius + maxCellRadius)
+	local cellCandidates = self.cellGrid:query(cell.pos, cellQueryRadius, self.queryScratch, self.querySeenScratch)
 	for _, id in cellCandidates do
 		if id ~= cell.id then
 			local target = self.cells[id]
