@@ -9541,14 +9541,16 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 2,
 
 	-- ==================================================================
-	-- E / Double Split repeats the normal Space split twice (up to 4 cells).
-	-- R / Triple Split repeats it three times (up to 8 cells).
+	-- E / Double Split: from one cell, end at 3 pieces.
+	-- R / Triple Split: from one cell, end at 4 pieces.
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
 	DoubleSplitEnabled = true,
 	TripleSplitEnabled = true,
 	RSplitGenerations = 3,
 	ESplitGenerations = 2,
+	RSplitTargetCells = 4,
+	ESplitTargetCells = 3,
 
 	-- Cluster matching was making split pieces travel as one blob.
 	-- Agar.io lets each cell keep its own mass-based speed, so small
@@ -9955,6 +9957,7 @@ Config.Render = {
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 8,
+	RepeatSplitVisualCalmSeconds = 0.35,
 	RepeatSplitVisualCalmSeconds = 0.35,
 	OwnCellVisualSeparationPasses = 1,
 	OwnCellVisualSeparationStrength = 0.75,
@@ -14071,18 +14074,18 @@ function GameService:_processCommands()
 			self:_splitPlayer(state)
 		end
 
-		-- R / Triple Split: three Space-style generations (up to 8 cells).
+		-- R / Triple Split: from one cell, end at 4 pieces.
 		if Config.Cell.DoubleSplitEnabled
 			and state.input.doubleSplitToken ~= state.lastDoubleSplitToken then
 			state.lastDoubleSplitToken = state.input.doubleSplitToken
-			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
+			self:_splitToCellCount(state, Config.Cell.RSplitTargetCells or 4)
 		end
 
-		-- E / Double Split: two Space-style generations (up to 4 cells).
+		-- E / Double Split: from one cell, end at 3 pieces.
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
-			self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
+			self:_splitToCellCount(state, Config.Cell.ESplitTargetCells or 3)
 		end
 
 		-- Freeze (F): toggles state.frozen. Frozen owner =&gt; cells skip
@@ -14122,9 +14125,13 @@ function GameService:_sortedPlayerCells(state)
 	return cells
 end
 
-function GameService:_splitPlayer(state, lockedAim: Vector2?)
+function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?)
 	local cells = self:_sortedPlayerCells(state)
-	local splitsLeft = math.min(Config.Cell.MaxSplitPiecesPerCommand, Config.Player.MaxCells - #state.cells)
+	local pieceCap = Config.Cell.MaxSplitPiecesPerCommand
+	if maxPieces then
+		pieceCap = math.min(pieceCap, math.max(math.floor(maxPieces), 0))
+	end
+	local splitsLeft = math.min(pieceCap, Config.Player.MaxCells - #state.cells)
 	local eligible = {}
 	for _, cell in cells do
 		if #eligible &gt;= splitsLeft then
@@ -14260,15 +14267,31 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 end
 
 function GameService:_repeatSplitPlayer(state, generations: number)
-	-- E/R repeat actual Space presses, but every generation keeps the same
-	-- launch axis. Re-aiming each piece at the cursor from its new offset
-	-- is what made the 4/8-cell train fan and jitter.
+	-- Legacy all-cell generations. E/R now use _splitToCellCount so a
+	-- double/triple press cannot explode 1→4→8.
 	local aim = splitAimForState(state)
 	for _ = 1, math.max(math.floor(generations), 1) do
 		if #state.cells &gt;= Config.Player.MaxCells then
 			break
 		end
 		self:_splitPlayer(state, aim)
+	end
+end
+
+function GameService:_splitToCellCount(state, targetCount: number)
+	-- Split the largest eligible cell one at a time along one locked aim
+	-- until the player has `targetCount` cells. Double = 3, Triple = 4.
+	local aim = splitAimForState(state)
+	local target = math.min(
+		math.max(math.floor(targetCount), 1),
+		Config.Player.MaxCells
+	)
+	while #state.cells &lt; target do
+		local before = #state.cells
+		self:_splitPlayer(state, aim, 1)
+		if #state.cells &lt;= before then
+			break
+		end
 	end
 end
 
