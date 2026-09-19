@@ -4939,15 +4939,21 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local displayRadius = radius
 		local spawnSource = nil
 		local splitVisualBoost = nil
+		local spawnOrigin = nil
+		local splitBoostRampUntil = nil
+		local splitBoostRampStartedAt = nil
+		local splitBoostRampTotal = nil
+		local splitBoostRampDir = nil
+		local singleSplitSoftUntil = nil
 		if kind == "cell" then
-			local origin
-			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
-			if origin then
-				local launchDelta = pos - origin
+			spawnOrigin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
+			if spawnOrigin then
+				local launchDelta = pos - spawnOrigin
 				local launchDir = if launchDelta.Magnitude &gt; 0.001 then launchDelta.Unit else self.localMoveAim
 				local boostScale = if self.localFrozen
 					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 					else 1
+				local ownSingleSplit = extra and extra.isOwn == true and self.singleSplitVisual
 				if self.localFrozen then
 					-- Frozen pieces are already parked beside the parent.
 					-- Starting on the origin made a freeze-split look like
@@ -4958,13 +4964,29 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 						self.frozenSplitAim = launchDir
 					end
 				else
-					displayPos = origin
-					displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
+					displayPos = spawnOrigin
+					local startScale = if ownSingleSplit
+						then (Config.Render.SingleSplitStartRadiusScale or 0.76)
+						else (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82)
+					displayRadius = math.max(radius * startScale, 1)
 				end
 				if boostScale &gt; 0 then
-					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
-					if self.singleSplitVisual then
-						splitVisualBoost *= math.clamp(Config.Cell.SingleSplitImpulseScale or 0.86, 0.5, 1)
+					local impulse = splitImpulseForMass(mass) * boostScale
+					if ownSingleSplit then
+						impulse *= math.clamp(Config.Cell.SingleSplitImpulseScale or 0.9, 0.5, 1)
+						local initialFrac = math.clamp(Config.Cell.SingleSplitBoostInitialFraction or 0.36, 0.15, 1)
+						local rampSeconds = math.max(Config.Cell.SingleSplitBoostRampSeconds or 0.32, 0)
+						splitVisualBoost = launchDir * (impulse * initialFrac)
+						if rampSeconds &gt; 0.001 and initialFrac &lt; 0.999 and launchDir and launchDir.Magnitude &gt; 0.001 then
+							splitBoostRampDir = launchDir
+							splitBoostRampTotal = impulse * (1 - initialFrac)
+							splitBoostRampStartedAt = receivedAt
+							splitBoostRampUntil = receivedAt + rampSeconds
+							singleSplitSoftUntil = receivedAt + rampSeconds
+								+ math.max(Config.Render.SingleSplitReconcileTailSeconds or 0.14, 0)
+						end
+					else
+						splitVisualBoost = launchDir * impulse
 					end
 				end
 			end
@@ -4983,25 +5005,23 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			confirmed = true,
 			staticPos = if isStatic then pos else nil,
 			-- Appear on the parent immediately. Prediction applies
-			-- splitVisualBoost this frame so the burst is not eased in.
-			-- A lone Space split gets a short ease so it is not a hard snap.
-			spawnAnimatingUntil = if kind == "cell" and self.singleSplitVisual and origin
-				then receivedAt + math.max(Config.Render.SingleSplitSpawnAnimationSeconds or 0.2, 0)
-				else nil,
-			spawnAnimationStartedAt = if kind == "cell" and self.singleSplitVisual and origin
-				then receivedAt
-				else nil,
-			spawnAnimationOrigin = if kind == "cell" and self.singleSplitVisual then origin else nil,
+			-- splitVisualBoost this frame so multi-cell / R / E bursts
+			-- are not eased in. A lone Space split ramps boost instead
+			-- of chasing the already-flying server pose.
+			spawnAnimatingUntil = nil,
+			spawnAnimationStartedAt = nil,
+			spawnAnimationOrigin = nil,
 			spawnAnimationSource = spawnSource,
 			spawnAnimationOffset = nil,
 			spawnAnimationTargetPos = nil,
-			spawnAnimationStartRadius = if kind == "cell" and self.singleSplitVisual
-				then displayRadius
-				else nil,
-			spawnAnimationSeconds = if kind == "cell" and self.singleSplitVisual
-				then math.max(Config.Render.SingleSplitSpawnAnimationSeconds or 0.2, 0)
-				else nil,
+			spawnAnimationStartRadius = nil,
+			spawnAnimationSeconds = nil,
 			splitVisualBoost = splitVisualBoost,
+			splitBoostRampUntil = splitBoostRampUntil,
+			splitBoostRampStartedAt = splitBoostRampStartedAt,
+			splitBoostRampTotal = splitBoostRampTotal,
+			splitBoostRampDir = splitBoostRampDir,
+			singleSplitSoftUntil = singleSplitSoftUntil,
 		}
 		states[id] = state
 		if kind == "cell" and spawnSource then
@@ -5735,12 +5755,51 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	return true
 end
 
+function Renderer:_applySingleSplitBoostRamp(state, now: number, dt: number)
+	local untilTime = state.splitBoostRampUntil
+	if not untilTime then
+		return
+	end
+	if now &gt;= untilTime then
+		state.splitBoostRampUntil = nil
+		state.splitBoostRampTotal = nil
+		state.splitBoostRampDir = nil
+		state.splitBoostRampStartedAt = nil
+		return
+	end
+	local started = state.splitBoostRampStartedAt or now
+	local duration = math.max(untilTime - started, 0.001)
+	local elapsed = math.max(now - started, 0)
+	local prevElapsed = math.max(elapsed - dt, 0)
+	local p = math.clamp(elapsed / duration, 0, 1)
+	local prevP = math.clamp(prevElapsed / duration, 0, 1)
+	local smooth = p * p * (3 - 2 * p)
+	local prevSmooth = prevP * prevP * (3 - 2 * prevP)
+	local slice = (state.splitBoostRampTotal or 0) * (smooth - prevSmooth)
+	local rampDir = state.splitBoostRampDir
+	if rampDir and rampDir.Magnitude &gt; 0.001 and slice &gt; 0 then
+		state.splitVisualBoost = (state.splitVisualBoost or Vector2.zero) + rampDir * slice
+	end
+end
+
 function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: number)
 	-- Frozen cells hard-stop in place. Easing onto the server pose while
 	-- frozen pulled visually-separated pieces back into a tighter clump.
 	local sharpness = Config.Render.OwnCellPredictionReconcileSharpness
 		or Config.Render.InterpolationSharpness
 	if self.localFrozen then sharpness = Config.Render.FrozenReconcileSharpness or 8 end
+	local now = os.clock()
+	if (state.singleSplitSoftUntil or 0) &gt; now then
+		local singleSharp = Config.Render.SingleSplitReconcileSharpness or 4.5
+		local tail = math.max(Config.Render.SingleSplitReconcileTailSeconds or 0.14, 0.001)
+		local remain = state.singleSplitSoftUntil - now
+		if remain &gt; tail then
+			sharpness = math.min(sharpness, singleSharp)
+		else
+			local blend = 1 - remain / tail
+			sharpness = singleSharp + (sharpness - singleSharp) * blend
+		end
+	end
 	local reconcileAlpha = 1 - math.exp(-dt * sharpness)
 	local authoritativeTarget = self:_projectOwnAuthoritativeTarget(state)
 	if self:_stepSplitSpawnAnimation(state, authoritativeTarget, dt) then
@@ -5773,6 +5832,9 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 		predictedVelocity = Config.balanceClusterVelocity(state.displayPos, self.clusterMoveCenter,
 			self.clusterMoveRadius or 0, predictedVelocity, moveSpeed)
 	end
+	if not self.localFrozen then
+		self:_applySingleSplitBoostRamp(state, now, dt)
+	end
 	if state.splitVisualBoost and not self.localFrozen then
 		state.splitVisualBoost *= math.exp(-dt * math.max(Config.Cell.SplitBoostDragPerSecond or 1.9, 0))
 		if state.splitVisualBoost.Magnitude &lt; 1 then
@@ -5795,7 +5857,11 @@ function Renderer:_stepOwnCellPrediction(state, dt: number, interpolationAlpha: 
 	if self.localFrozen then reconcileDeadband = 0.1 end
 	local snapDistance = math.max(Config.Render.OwnCellPredictionSnapDistance or 320, reconcileDeadband * 2)
 	local spawnAnimating = (state.spawnAnimatingUntil or 0) &gt; os.clock()
-	if errorDistance &gt; snapDistance and not spawnAnimating then
+	local peeling = (state.singleSplitSoftUntil or 0) &gt; now
+	if peeling then
+		reconcileDeadband = math.max(reconcileDeadband, state.radius * 0.12)
+	end
+	if errorDistance &gt; snapDistance and not spawnAnimating and not peeling then
 		local reconciled = state.displayPos:Lerp(authoritativeTarget, math.max(reconcileAlpha, 0.65))
 		state.displayPos = self:_resolveCircleAgainstBarriers(reconciled, state.radius)
 	elseif errorDistance &gt; reconcileDeadband then
@@ -9569,7 +9635,10 @@ Config.Cell = {
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
 	SplitImpulse = 580,
-	SingleSplitImpulseScale = 0.86,
+	SingleSplitImpulseScale = 0.9,
+	SingleSplitSpawnOffsetRadiusScale = 0.26,
+	SingleSplitBoostInitialFraction = 0.36,
+	SingleSplitBoostRampSeconds = 0.32,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SmallSplitReferenceMass = 1000,
@@ -10090,7 +10159,9 @@ Config.Render = {
 	-- controls the visual offset and radius growth without holding the child
 	-- on its parent.
 	SplitSpawnAnimationSeconds = 0.18,
-	SingleSplitSpawnAnimationSeconds = 0.2,
+	SingleSplitStartRadiusScale = 0.76,
+	SingleSplitReconcileSharpness = 4.5,
+	SingleSplitReconcileTailSeconds = 0.14,
 	SplitSpawnAnimationStartRadiusScale = 0.82,
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 28,
@@ -10156,6 +10227,9 @@ Config.Tunables = {
 	-- Cell
 	{ path = "Cell.SplitImpulse",                label = "Split Distance",            type = "number", min = 100,  max = 2000,  step = 25 },
 	{ path = "Cell.SingleSplitImpulseScale",     label = "Single Split Impulse",      type = "number", min = 0.5,  max = 1,     step = 0.02 },
+	{ path = "Cell.SingleSplitSpawnOffsetRadiusScale", label = "Single Split Nest",   type = "number", min = 0,    max = 1,     step = 0.02 },
+	{ path = "Cell.SingleSplitBoostRampSeconds", label = "Single Split Ramp (s)",     type = "number", min = 0,    max = 1,     step = 0.02 },
+	{ path = "Render.SingleSplitReconcileSharpness", label = "Single Split Follow", type = "number", min = 1,    max = 20,    step = 0.5 },
 	{ path = "Cell.SplitMaxBoost",               label = "Split Momentum Cap",        type = "number", min = 100,  max = 3000,  step = 25 },
 	{ path = "Cell.SplitBoostDragPerSecond",     label = "Split Braking (higher = shorter)", type = "number", min = 0.5, max = 10, step = 0.1 },
 	{ path = "Cell.SplitMinMass",                label = "Split Min Mass",            type = "number", min = 100,  max = 20000, step = 100, int = true },
@@ -13565,6 +13639,49 @@ function GameService:_splitLaunchBoost(cell, direction: Vector2, childMass: numb
 	return launched
 end
 
+function GameService:_beginSingleSplitBoostRamp(cell, direction: Vector2, now: number)
+	-- Deliver most of a lone Space launch over a short ease-in-out instead
+	-- of the full impulse on frame 1. R/E and multi-cell splits skip this.
+	local rampSeconds = math.max(Config.Cell.SingleSplitBoostRampSeconds or 0.32, 0)
+	local initialFrac = math.clamp(Config.Cell.SingleSplitBoostInitialFraction or 0.36, 0.15, 1)
+	local mag = (cell.boost or Vector2.zero).Magnitude
+	if rampSeconds &lt; 0.001 or initialFrac &gt;= 0.999 or mag &lt; 0.001 or not direction or direction.Magnitude &lt; 0.001 then
+		return
+	end
+	cell.singleSplitRampDir = direction
+	cell.singleSplitRampTotal = mag * (1 - initialFrac)
+	cell.singleSplitRampStartedAt = now
+	cell.singleSplitRampUntil = now + rampSeconds
+	cell.boost = direction * (mag * initialFrac)
+end
+
+function GameService:_applySingleSplitBoostRamp(cell, now: number, dt: number)
+	local untilTime = cell.singleSplitRampUntil
+	if not untilTime then
+		return
+	end
+	if now &gt;= untilTime then
+		cell.singleSplitRampUntil = nil
+		cell.singleSplitRampTotal = nil
+		cell.singleSplitRampDir = nil
+		cell.singleSplitRampStartedAt = nil
+		return
+	end
+	local started = cell.singleSplitRampStartedAt or now
+	local duration = math.max(untilTime - started, 0.001)
+	local elapsed = math.max(now - started, 0)
+	local prevElapsed = math.max(elapsed - dt, 0)
+	local p = math.clamp(elapsed / duration, 0, 1)
+	local prevP = math.clamp(prevElapsed / duration, 0, 1)
+	local smooth = p * p * (3 - 2 * p)
+	local prevSmooth = prevP * prevP * (3 - 2 * prevP)
+	local slice = (cell.singleSplitRampTotal or 0) * (smooth - prevSmooth)
+	local rampDir = cell.singleSplitRampDir
+	if rampDir and rampDir.Magnitude &gt; 0.001 and slice &gt; 0 then
+		cell.boost += rampDir * slice
+	end
+end
+
 function GameService:_spawnFoodPellet(pos: Vector2, pelletMass: number, angle: number?, sourceRadius: number?)
 	local id = self:_nextId()
 	local dir = Vec2.fromAngle(angle or self.rng:NextNumber(0, math.pi * 2))
@@ -14229,9 +14346,11 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 
 	local startCount = #state.cells
 	local now = os.clock()
+	-- Only a live Space 1→2 peels smoothly. R/E pass lockedAim; extra
+	-- Space splits and freeze-splits keep the snappy senpa launch.
 	local singleSpace = not lockedAim and not state.frozen and startCount &lt;= 1
 	local launchScale = if singleSpace
-		then math.clamp(Config.Cell.SingleSplitImpulseScale or 0.86, 0.5, 1)
+		then math.clamp(Config.Cell.SingleSplitImpulseScale or 0.9, 0.5, 1)
 		else 1
 	for _, cell in eligible do
 		-- Repeat splits (R/E) share one launch direction so new shots stay
@@ -14260,9 +14379,13 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.4, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
-			-- Senpa/vanilla: the child is born on the parent. Boost, not a
-			-- spawn offset, is what shoots it out.
-			local nest = childRadius * math.max(Config.Cell.SplitSpawnOffsetRadiusScale or 0, 0)
+			-- Senpa/vanilla: R/E and multi-cell children are born on the
+			-- parent. A lone Space split peels from a small nest so the
+			-- 1→2 launch is not a coincident pop.
+			local nestScale = if singleSpace
+				then math.max(Config.Cell.SingleSplitSpawnOffsetRadiusScale or 0.26, 0)
+				else math.max(Config.Cell.SplitSpawnOffsetRadiusScale or 0, 0)
+			local nest = childRadius * nestScale
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
 				cell.pos + dir * nest,
@@ -14280,6 +14403,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			child.sweptEatStartPos = cell.pos
 			child.splitAxis = dir
 			child.splitParentId = cell.id
+			if singleSpace then
+				self:_beginSingleSplitBoostRamp(child, dir, now)
+			end
 		end
 	end
 	if state.frozen then
@@ -14911,6 +15037,7 @@ function GameService:_moveCells(dt: number)
 		local steering = Config.balanceClusterVelocity(cell.pos, playerCentroid[cell.ownerUserId],
 			ownerState and ownerState.clusterMoveRadius or 0, dir * speed * speedScale, speed)
 
+		self:_applySingleSplitBoostRamp(cell, now, dt)
 		cell.boost *= math.exp(-dt * math.max(Config.Cell.SplitBoostDragPerSecond or 1.9, 0))
 		if cell.boost.Magnitude &lt; 1 then
 			cell.boost = Vector2.zero
