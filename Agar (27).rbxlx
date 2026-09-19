@@ -4593,9 +4593,6 @@ function Renderer:setSnapshot(snapshot)
 			if ownCellsInSnapshot - (self.lastOwnCellCount or 0) &gt;= 2 then
 				self.repeatSplitVisualCalmUntil = receivedAt + (Config.Render.RepeatSplitVisualCalmSeconds or 0.35)
 			end
-			-- Space and multi-split: let the new piece sit inside the
-			-- parent briefly so it reads as a shot, not a midpoint pop.
-			self.splitVisualNestUntil = receivedAt + (Config.Render.SplitVisualNestSeconds or 0.4)
 			if ownCellsInSnapshot &gt;= 2 then
 				self.unfreezeReleaseSpent = false
 			end
@@ -5662,9 +5659,10 @@ function Renderer:_stepSplitSpawnAnimation(state, targetPos: Vector2, dt: number
 	local smoothTarget = (state.spawnAnimationTargetPos or projectedTarget):Lerp(projectedTarget, targetAlpha)
 	state.spawnAnimationTargetPos = smoothTarget
 
-	-- Ease the entire launch, not just a tiny spawn offset on a fast target.
+	-- Senpa-style: hard launch, ease-out so the piece is already flying
+	-- in the first frames instead of a slow midpoint morph.
 	local progress = math.clamp(elapsed / duration, 0, 1)
-	local easedProgress = progress ^ 3 * (progress * (progress * 6 - 15) + 10)
+	local easedProgress = 1 - (1 - progress) * (1 - progress)
 	local startRadius = state.spawnAnimationStartRadius or targetRadius
 	state.radius = startRadius + (targetRadius - startRadius) * easedProgress
 	state.radiusVelocity = 0
@@ -6003,10 +6001,6 @@ function Renderer:_resolveOwnCellVisualSeparation()
 		return
 	end
 	local scale = math.max(Config.Render.OwnCellVisualSeparationScale or 1, 1)
-	local nesting = now &lt; (self.splitVisualNestUntil or 0)
-	if nesting then
-		scale = math.min(scale, math.max(Config.Render.SplitVisualNestScale or 0.48, 0.2))
-	end
 
 	-- Unfreeze grace: from the instant we unfreeze, ramp strength and
 	-- passes up smoothly from ~0 to full over a long window that
@@ -6073,22 +6067,8 @@ function Renderer:_resolveOwnCellVisualSeparation()
 					local aMass = math.max(a.mass or a.radius, 1)
 					local bMass = math.max(b.mass or b.radius, 1)
 					local totalMass = aMass + bMass
-					local aShare = bMass / totalMass
-					local bShare = aMass / totalMass
-					if nesting then
-						local recoil = math.clamp(Config.Render.SplitVisualParentRecoilShare or 0.1, 0, 0.5)
-						local aAlong = (a.velocity or Vector2.zero):Dot(dir)
-						local bAlong = (b.velocity or Vector2.zero):Dot(dir)
-						if bAlong &gt;= aAlong then
-							aShare = recoil
-							bShare = 1 - recoil
-						else
-							bShare = recoil
-							aShare = 1 - recoil
-						end
-					end
-					a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * aShare, a.radius)
-					b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * bShare, b.radius)
+					a.displayPos = self:_clampToWorld(a.displayPos - dir * overlap * (bMass / totalMass), a.radius)
+					b.displayPos = self:_clampToWorld(b.displayPos + dir * overlap * (aMass / totalMass), b.radius)
 				end
 			end
 		end
@@ -9532,24 +9512,24 @@ Config.Cell = {
 	RecombineScaleMass = 10000,
 	RecombinePerScaleMass = 2, -- seconds added per ScaleMass of mass
 	SplitMinMass = 100,
-	SplitImpulse = 300,
+	SplitImpulse = 580,
 	SplitImpulseMassExponent = 0.28,
 	MinSplitImpulseScale = 0.34, -- was 0.24; big-cell splits get real spread too
 	SmallSplitReferenceMass = 1000,
 	SmallSplitMinScale = 0.45,
 	SplitInheritedBoostScale = 0.65,
-	SplitMaxBoost = 500,
-	SplitBoostDragPerSecond = 3,
+	SplitMaxBoost = 780,
+	SplitBoostDragPerSecond = 2.4,
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
-	SplitSpawnOffsetRadiusScale = 0.18,
+	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
 	FrozenSplitNudgeRadiusScale = 0.55,
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
-	SplitPushGraceSeconds = 0.28,
+	SplitPushGraceSeconds = 0.55,
 	RepeatSplitSteerLockSeconds = 0.4,
 	SplitPushMaxOverlapPerStep = 6,
 	SplitAllowOverlapScale = 0.7,
@@ -10047,7 +10027,7 @@ Config.Render = {
 	-- The launch follows its authoritative target immediately; smoothstep
 	-- controls the visual offset and radius growth without holding the child
 	-- on its parent.
-	SplitSpawnAnimationSeconds = 0.45,
+	SplitSpawnAnimationSeconds = 0.18,
 	SplitSpawnAnimationStartRadiusScale = 0.82,
 	SplitSpawnAnimationEndDistance = 1,
 	SplitSpawnAnimationSharpness = 28,
@@ -14202,9 +14182,12 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
+			-- Senpa/vanilla: the child is born on the parent. Boost, not a
+			-- spawn offset, is what shoots it out.
+			local nest = childRadius * math.max(Config.Cell.SplitSpawnOffsetRadiusScale or 0, 0)
 			spawnPos = self:_adjustSpawnPositionForBarriers(
 				cell.pos,
-				cell.pos + dir * (childRadius * (Config.Cell.SplitSpawnOffsetRadiusScale or 0.35)),
+				cell.pos + dir * nest,
 				childRadius
 			)
 		end
@@ -15009,7 +14992,7 @@ function GameService:_moveBarriers(dt: number)
 
 	local maxFoodRadius = Config.Food.Radius
 	local maxEjectedRadius = Config.Ejected.Radius
-	local maxVirusRadius = self:_maxEntityRadius(self.viruses, Config.Virus.Radius)
+	local maxVirusRadius = self:_maxEntityRadius(self.viruses, virusRadius())
 	local maxSpawnerRadius = self:_maxEntityRadius(self.spawners, Config.Spawner.BaseRadius)
 	for _, barrier in self.barriers do
 		local barrierRadius = math.max(barrier.halfSize.X, barrier.halfSize.Y)
@@ -15282,9 +15265,13 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
 					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
+						-- Senpa/vanilla: just-split cells ignore sibling
+						-- collision (~15 ticks). The child's boost is the
+						-- whole shot; a midpoint shove is what looked wrong.
 						local graceUntil = math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0)
-						local inSplitGrace = now &lt; graceUntil
-						local inLaunch = now &lt; graceUntil + math.max(Config.Cell.SplitLaunchBiasSeconds or 0.35, 0)
+						if now &lt; graceUntil then
+							continue
+						end
 						local axis = Vec2.safeUnit(
 							(a.splitAxis or Vector2.zero) + (b.splitAxis or Vector2.zero),
 							Vec2.safeUnit(
@@ -15296,55 +15283,14 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 						if dist &gt; 0.001 then
 							dir = delta / dist
 						else
-							-- Preserve the split axis for coincident pieces instead
-							-- of spraying them along arbitrary pair-specific angles.
 							dir = axis
 							dist = 0
 						end
-						-- A same-tick 4/8-cell burst starts almost stacked.
-						-- Tiny sideways deltas become a shaky spray if we
-						-- push along them; keep the train on the launch line.
-						if inLaunch then
-							if dir:Dot(axis) &lt; 0 then
-								axis = -axis
-							end
-							dir = axis
-						end
 
-						local pairOverlapCap = overlapCap
-						local resolveDist = minDist
-						if inSplitGrace then
-							pairOverlapCap = math.min(
-								pairOverlapCap,
-								math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
-							)
-							-- Let the new piece sit inside the parent for a
-							-- beat so the launch looks like a shot, not two
-							-- cells exploding from the midpoint.
-							local nest = math.clamp(Config.Cell.SplitAllowOverlapScale or 0.7, 0, 0.95)
-							resolveDist = minDist * (1 - nest)
-							if dist &gt;= resolveDist then
-								continue
-							end
-						end
-						local overlap = math.min((resolveDist - dist) * pushStrength, pairOverlapCap)
+						local overlap = math.min((minDist - dist) * pushStrength, overlapCap)
 						local totalMass = math.max(a.mass + b.mass, 1)
 						local aShare = b.mass / totalMass
 						local bShare = a.mass / totalMass
-						if inLaunch then
-							-- Shoot the front/faster cell out. The parent
-							-- keeps almost all of its place.
-							local recoil = math.clamp(Config.Cell.SplitParentRecoilShare or 0.08, 0, 0.5)
-							local aAlong = a.pos:Dot(axis) + (a.boost or Vector2.zero):Dot(axis) * 0.03
-							local bAlong = b.pos:Dot(axis) + (b.boost or Vector2.zero):Dot(axis) * 0.03
-							if bAlong &gt;= aAlong then
-								aShare = recoil
-								bShare = 1 - recoil
-							else
-								bShare = recoil
-								aShare = 1 - recoil
-							end
-						end
 						overlap = math.min(overlap,
 							(pushBudget[a.id] or 0) / math.max(aShare, 0.000001),
 							(pushBudget[b.id] or 0) / math.max(bShare, 0.000001))
@@ -15353,18 +15299,14 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 
 						a.pos -= dir * overlap * aShare
 						b.pos += dir * overlap * bShare
-						-- Sideways boost exchange is what made a stacked
-						-- train wobble. Leave it off during the launch.
-						if not inLaunch then
-							local aBoost = a.boost or Vector2.zero
-							local bBoost = b.boost or Vector2.zero
-							local tangent = Vector2.new(-dir.Y, dir.X)
-							local spin = (bBoost - aBoost):Dot(tangent)
-							if math.abs(spin) &gt; 1 then
-								local kill = spin * 0.45
-								a.boost = aBoost + tangent * (kill * bShare)
-								b.boost = bBoost - tangent * (kill * aShare)
-							end
+						local aBoost = a.boost or Vector2.zero
+						local bBoost = b.boost or Vector2.zero
+						local tangent = Vector2.new(-dir.Y, dir.X)
+						local spin = (bBoost - aBoost):Dot(tangent)
+						if math.abs(spin) &gt; 1 then
+							local kill = spin * 0.45
+							a.boost = aBoost + tangent * (kill * bShare)
+							b.boost = bBoost - tangent * (kill * aShare)
 						end
 						a.pos = self:_clampToWorld(a.pos, a.radius)
 						b.pos = self:_clampToWorld(b.pos, b.radius)
