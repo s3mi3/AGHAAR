@@ -9711,7 +9711,7 @@ Config.Food = {
 Config.Virus = {
 	-- Preserve hazard density in the smaller arena.
 	TargetCount = 78,
-	Mass = 300,
+	Mass = 800,
 	Radius = 14,
 	-- Eligibility and coverage use Cell.MinEatRatio / Cell.EnemyEatOverlap.
 	-- Below the 32-cell cap a virus bursts the eater into more pieces.
@@ -9719,10 +9719,10 @@ Config.Virus = {
 	SplitOnEat = true,
 	MaxBurstPieces = 8,
 	BurstMergeGraceSeconds = 1.25,
-	BumpVelocityTransfer = 0.65,
+	BumpVelocityTransfer = 1.15,
 	BumpMinSpeed = 0,
-	BumpMaxSpeed = 220,
-	DragPerSecond = 3,
+	BumpMaxSpeed = 360,
+	DragPerSecond = 1.2,
 	WallBounceScale = 0,
 	StopSpeed = 3,
 	DynamicSnapshotMinSpeed = 8,
