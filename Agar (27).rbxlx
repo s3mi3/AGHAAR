@@ -4804,6 +4804,7 @@ function Renderer:_clearMergeVisualHold(eater)
 	eater.mergeGoalMass = nil
 	eater.mergePending = nil
 	eater.visualMass = nil
+	eater.eatGrow = nil
 end
 
 function Renderer:_beginMergeVisualHold(eater)
@@ -4829,7 +4830,7 @@ function Renderer:_incomingMergeCount(eater, exceptPrey): number
 			and state.consumeTarget == eater
 			and state.consumeFade ~= true
 			and state.mergeMassApplied ~= true
-			and (state.consumeIsMerge == true or state.consumeHoldEater == true)
+			and state.consumeIsMerge == true
 		then
 			n += 1
 		end
@@ -5778,6 +5779,25 @@ end
 
 function Renderer:_stepCellRadius(state, dt: number)
 	if state.mergeHoldRadius ~= nil then
+		if state.eatGrow == true then
+			local goal = state.mergeGoalRadius or state.targetRadius or state.mergeHoldRadius
+			local sharpness = math.max(Config.Render.EatGrowSharpness or 6, 1)
+			local alpha = 1 - math.exp(-dt * sharpness)
+			state.radius += (goal - state.radius) * alpha
+			state.mergeHoldRadius = state.radius
+			state.radiusVelocity = 0
+			if typeof(state.mergeGoalMass) == "number" then
+				local vis = state.visualMass or state.mergeHoldMass or state.mass or 0
+				state.visualMass = vis + (state.mergeGoalMass - vis) * alpha
+			end
+			if math.abs(goal - state.radius) &lt; 0.35 then
+				state.radius = goal
+				state.targetRadius = goal
+				state.visualMass = state.mergeGoalMass or state.visualMass
+				self:_clearMergeVisualHold(state)
+			end
+			return
+		end
 		state.radius = state.mergeHoldRadius
 		state.radiusVelocity = 0
 		return
@@ -6075,9 +6095,9 @@ function Renderer:_stepEntityStates(states, dt: number)
 			if state.consumeFade == true or not target then
 				local fade = progress * progress * (3 - 2 * progress)
 				state.radius = math.max((state.consumeStartRadius or state.radius) * (1 - fade), 0)
-			elseif state.consumeIsMerge or state.consumeHoldEater then
-				-- Smooth pull-in, then add mass only when this cell is under
-				-- the eater so size and score stay in sync.
+			elseif state.consumeIsMerge == true then
+				-- Own-cell merge stays snappy: pull in, then add mass the
+				-- instant this piece is under you.
 				local t = math.clamp(progress / 0.94, 0, 1)
 				local pull = 1 - (1 - t) * (1 - t)
 				local offset = state.consumeStartOffset
@@ -6093,6 +6113,27 @@ function Renderer:_stepEntityStates(states, dt: number)
 					self:_applyPreyMergeMass(target, state)
 					state.radius = 0
 				end
+			elseif state.consumeHoldEater then
+				-- Enemy eat: slide them in and ease your size to the server
+				-- goal so you do not pop huge then snap back.
+				local t = math.clamp(progress / 0.92, 0, 1)
+				local pull = 1 - (1 - t) * (1 - t)
+				local offset = state.consumeStartOffset
+				if typeof(offset) ~= "Vector2" then
+					local startPos = state.consumeStartPos or state.displayPos
+					offset = startPos - targetPos
+				end
+				state.displayPos = targetPos + offset * (1 - pull)
+				local startRadius = state.consumeStartRadius or state.radius
+				local shrink = math.clamp((pull - 0.2) / 0.8, 0, 1)
+				state.radius = math.max(startRadius * (1 - shrink), 0)
+				if self:_mergePreyIsUnder(state, target) then
+					target.eatGrow = true
+					if typeof(target.mergeGoalMass) == "number" then
+						local vis = target.visualMass or target.mergeHoldMass or target.mass or 0
+						target.visualMass = vis + (target.mergeGoalMass - vis) * math.min(dt * 5, 1)
+					end
+				end
 			else
 				local consumeAlpha = 1 - math.exp(-dt * (Config.Render.ConsumeAnimationSharpness or 18))
 				state.displayPos = state.displayPos:Lerp(targetPos, consumeAlpha)
@@ -6100,9 +6141,10 @@ function Renderer:_stepEntityStates(states, dt: number)
 			end
 			if now &gt;= state.consumeUntil then
 				local consumeTarget = state.consumeTarget
-				local wasHold = state.consumeIsMerge == true or state.consumeHoldEater == true
-				if wasHold then
+				if state.consumeIsMerge == true then
 					self:_applyPreyMergeMass(consumeTarget, state)
+				elseif state.consumeHoldEater == true and consumeTarget then
+					consumeTarget.eatGrow = true
 				end
 				states[id] = nil
 				self.cellPool:release(id)
@@ -6448,7 +6490,7 @@ function Renderer:_updateCameraOwnRadius()
 		if state.isOwn and state.confirmed and not state.consumeUntil then
 			sum += state.radius
 			hasOwn = true
-		elseif (state.consumeIsMerge == true or state.consumeHoldEater == true)
+		elseif state.consumeIsMerge == true
 			and state.consumeFade ~= true
 			and state.consumeTarget
 			and state.consumeTarget.isOwn
@@ -10736,7 +10778,8 @@ Config.Render = {
 	SplitSpawnAnimationMaxOverrunSeconds = 0.08,
 	SplitSpawnAnimationMaxDistance = 900,
 	SplitSpawnAnimationRadiusScale = 4.5,
-	ConsumeAnimationSeconds = 0.22,
+	ConsumeAnimationSeconds = 0.36,
+	EatGrowSharpness = 6,
 	ConsumeAnimationSharpness = 18,
 	ConsumeFadeSeconds = 0.16,
 	-- Sibling swallow: one smooth slide into the eater.
