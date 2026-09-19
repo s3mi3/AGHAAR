@@ -5824,8 +5824,10 @@ function Renderer:_stepEntityStates(states, dt: number)
 				local shrinkStart = math.clamp(Config.Render.MergeShrinkStart or 0.34, 0, 0.7)
 				local pullT = math.clamp((progress - pullStart) / math.max(1 - pullStart, 0.01), 0, 1)
 				local shrinkT = math.clamp((progress - shrinkStart) / math.max(1 - shrinkStart, 0.01), 0, 1)
-				local pull = pullT * pullT * pullT * (pullT * (pullT * 6 - 15) + 10)
-				local shrink = shrinkT * shrinkT * shrinkT * (shrinkT * (shrinkT * 6 - 15) + 10)
+				-- Linear so the swallow does not ease-out and stall on the
+				-- last pixels before it goes under the eater.
+				local pull = pullT
+				local shrink = shrinkT
 				local offset = state.consumeStartOffset
 				if typeof(offset) ~= "Vector2" then
 					local startPos = state.consumeStartPos or state.displayPos
@@ -5835,7 +5837,7 @@ function Renderer:_stepEntityStates(states, dt: number)
 				-- tweening from a stale world point while the blob moves.
 				state.displayPos = targetPos + offset * (1 - pull)
 				local startRadius = state.consumeStartRadius or state.radius
-				state.radius = math.max(startRadius * ((1 - shrink) ^ 0.55), 0)
+				state.radius = math.max(startRadius * (1 - shrink), 0)
 				if self:_mergePreyIsUnder(state, target) then
 					self:_snapHeldMergeMass(target)
 				end
@@ -9581,12 +9583,12 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.28,
+	FrozenSplitNudgeRadiusScale = 0.4,
 	FrozenSplitHeldBoostScale = 1,
-	FrozenSplitLineMaxLength = 72,
-	FrozenSplitLineStepMin = 8,
-	FrozenSplitLineStepMax = 16,
-	FrozenSplitLineFatnessScale = 0.12,
+	FrozenSplitLineMaxLength = 200,
+	FrozenSplitLineStepMin = 20,
+	FrozenSplitLineStepMax = 40,
+	FrozenSplitLineFatnessScale = 0.4,
 	FrozenSplitLineStepRadiusScale = 0.12,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -9865,7 +9867,7 @@ Config.Freeze = {
 	UnfreezeGraceSeconds = 0.55,
 	UnfreezeGraceStrength = 0.35,
 	UnfreezeGraceCurveExponent = 1.35,
-	UnfreezeMaxOverlapPerPass = 8,
+	UnfreezeMaxOverlapPerPass = 30,
 	UnfreezePushPasses = 2,
 	ReleaseImpulse = 170,
 	ReleaseImpulseMinScale = 0.4,
@@ -10213,16 +10215,16 @@ Config.Tunables = {
 	{ path = "Freeze.Enabled",                   label = "Freeze Enabled",            type = "bool" },
 	{ path = "Freeze.UnfreezeGraceSeconds",      label = "Unfreeze Grace (s)",        type = "number", min = 0,    max = 15,    step = 0.1 },
 	{ path = "Freeze.UnfreezeGraceStrength",     label = "Unfreeze Grace Strength",   type = "number", min = 0,    max = 1,     step = 0.01 },
-	{ path = "Freeze.UnfreezeMaxOverlapPerPass", label = "Unfreeze Max Overlap/Pass", type = "number", min = 0,    max = 30,    step = 0.1 },
+	{ path = "Freeze.UnfreezeMaxOverlapPerPass", label = "Unfreeze Max Overlap/Pass", type = "number", min = 0,    max = 60,    step = 0.1 },
 	{ path = "Freeze.ReleaseImpulse",             label = "Unfreeze Release Impulse",  type = "number", min = 0,    max = 3000,  step = 20 },
 	{ path = "Freeze.ReleaseImpulseMinScale",     label = "Release Impulse Min Scale", type = "number", min = 0,    max = 1,     step = 0.05 },
 	{ path = "Freeze.ReleaseMinHoldSeconds",      label = "Release Min Hold (s)",      type = "number", min = 0,    max = 5,     step = 0.05 },
 	{ path = "Freeze.UnfreezeSteerLockSeconds",   label = "Unfreeze Steer Lock (s)",   type = "number", min = 0,    max = 1.5,   step = 0.05 },
-	{ path = "Cell.FrozenSplitLineMaxLength",     label = "Freeze-Split Line Length",  type = "number", min = 0,    max = 200,   step = 2 },
-	{ path = "Cell.FrozenSplitLineStepMin",       label = "Freeze-Split Min Spacing",  type = "number", min = 0,    max = 40,    step = 0.5 },
-	{ path = "Cell.FrozenSplitLineStepMax",       label = "Freeze-Split Max Spacing",  type = "number", min = 0,    max = 40,    step = 0.5 },
+	{ path = "Cell.FrozenSplitLineMaxLength",     label = "Freeze-Split Line Length",  type = "number", min = 0,    max = 400,   step = 2 },
+	{ path = "Cell.FrozenSplitLineStepMin",       label = "Freeze-Split Min Spacing",  type = "number", min = 0,    max = 80,    step = 0.5 },
+	{ path = "Cell.FrozenSplitLineStepMax",       label = "Freeze-Split Max Spacing",  type = "number", min = 0,    max = 80,    step = 0.5 },
 	{ path = "Cell.FrozenSplitNudgeRadiusScale",  label = "Freeze-Split Nudge",        type = "number", min = 0,    max = 1,     step = 0.02 },
-	{ path = "Cell.FrozenSplitLineFatnessScale",  label = "Freeze-Split Thickness",    type = "number", min = 0,    max = 0.4,   step = 0.01 },
+	{ path = "Cell.FrozenSplitLineFatnessScale",  label = "Freeze-Split Thickness",    type = "number", min = 0,    max = 0.8,   step = 0.01 },
 
 	-- Cannibalize (hold C)
 	{ path = "Cell.CannibalizeEnabled",           label = "Cannibalize Enabled",       type = "bool" },
@@ -14255,7 +14257,7 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 		if state.frozen then
 			-- Seed a few pixels along the shot. The parked packer then
 			-- keeps the old stack, just as a short line.
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.28, 0)
+			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.4, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14339,7 +14341,7 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.28, 0)
+				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.4, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14476,10 +14478,10 @@ function GameService:_separateFrozenSplitCells(state)
 		group[#group + 1] = cells[i]
 	end
 
-	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 8, 1)
-	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 16, stepMin)
-	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 72, stepMax)
-	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.12, 0, 0.4)
+	local stepMin = math.max(Config.Cell.FrozenSplitLineStepMin or 20, 1)
+	local stepMax = math.max(Config.Cell.FrozenSplitLineStepMax or 40, stepMin)
+	local maxLine = math.max(Config.Cell.FrozenSplitLineMaxLength or 200, stepMax)
+	local fatnessScale = math.clamp(Config.Cell.FrozenSplitLineFatnessScale or 0.4, 0, 1)
 
 	for _, group in groups do
 		if #group &lt; 2 then
@@ -14586,7 +14588,7 @@ function GameService:_applyUnfreezeRelease(state)
 
 	-- Immediate rim pop so a frozen stack springs instead of oozing.
 	local popStrength = math.clamp(cfg.UnfreezePopStrength or 0.32, 0.1, 1)
-	local popCap = math.max(cfg.UnfreezeMaxOverlapPerPass or 8, 2)
+	local popCap = math.max(cfg.UnfreezeMaxOverlapPerPass or 30, 2)
 	for _ = 1, math.max(cfg.UnfreezePopPasses or 2, 1) do
 		for i = 1, #cells - 1 do
 			local a = cells[i]
