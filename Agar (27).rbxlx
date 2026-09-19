@@ -4587,10 +4587,10 @@ function Renderer:setSnapshot(snapshot)
 					state.visualSeparateUntil = separateUntil
 				end
 			end
-			-- Double/triple split jumps 1→4 or 1→8 in one snapshot.
+			-- Double/triple split jumps 1→3 or 1→4 in one snapshot.
 			-- Skip sideways visual shove for a beat so the train can
 			-- leave as a straight line instead of jittering apart.
-			if ownCellsInSnapshot - (self.lastOwnCellCount or 0) &gt;= 3 then
+			if ownCellsInSnapshot - (self.lastOwnCellCount or 0) &gt;= 2 then
 				self.repeatSplitVisualCalmUntil = receivedAt + (Config.Render.RepeatSplitVisualCalmSeconds or 0.35)
 			end
 			if ownCellsInSnapshot &gt;= 2 then
@@ -9957,7 +9957,6 @@ Config.Render = {
 	-- cooldown is active. This is visual-only; server physics remains
 	-- authoritative for actual positions and merge eligibility.
 	OwnCellVisualSeparationSeconds = 8,
-	RepeatSplitVisualCalmSeconds = 0.35,
 	RepeatSplitVisualCalmSeconds = 0.35,
 	OwnCellVisualSeparationPasses = 1,
 	OwnCellVisualSeparationStrength = 0.75,
