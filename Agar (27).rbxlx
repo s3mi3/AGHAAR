@@ -10482,6 +10482,7 @@ Config.Virus = {
 	-- patch cannot refill the whole map in one tick.
 	RespawnCooldownSeconds = 10,
 	MaxSpawnPerStep = 1,
+	SpawnAttempts = 28,
 }
 
 Config.Spawner = {
@@ -13720,7 +13721,7 @@ function GameService:_spawnFood(count: number)
 	self:_markStaticGridsDirty()
 end
 
-function GameService:_pickVirusSpawnPosition(): Vector2
+function GameService:_pickVirusSpawnPosition(): Vector2?
 	local sectionsX = math.max(Config.Virus.SpawnSectionsX or 4, 1)
 	local sectionsY = math.max(Config.Virus.SpawnSectionsY or 3, 1)
 	local worldSize = self:_worldSize()
@@ -13752,25 +13753,57 @@ function GameService:_pickVirusSpawnPosition(): Vector2
 		end
 	end
 
-	local chosenIndex = bestIndices[self.rng:NextInteger(1, #bestIndices)]
-	local chosenX = ((chosenIndex - 1) % sectionsX) + 1
-	local chosenY = math.floor((chosenIndex - 1) / sectionsX) + 1
 	local radius = virusRadius()
-	local minX = worldMin.X + (chosenX - 1) * sectionWidth + radius
-	local maxX = worldMin.X + chosenX * sectionWidth - radius
-	local minY = worldMin.Y + (chosenY - 1) * sectionHeight + radius
-	local maxY = worldMin.Y + chosenY * sectionHeight - radius
-	local pos = Vector2.new(
-		self.rng:NextNumber(minX, math.max(minX, maxX)),
-		self.rng:NextNumber(minY, math.max(minY, maxY))
-	)
-	return self:_clampToWorld(pos, radius)
+	if #bestIndices &lt;= 0 then
+		local fallback = self:_randomInWorld(math.max(Config.World.SpawnPadding or 0, radius))
+		if self:_spawnClearanceOk(fallback, radius) then
+			return fallback
+		end
+		return nil
+	end
+
+	local attempts = math.max(Config.Virus.SpawnAttempts or 28, 8)
+	local function sectionCandidate(): Vector2
+		local chosenIndex = bestIndices[self.rng:NextInteger(1, math.max(#bestIndices, 1))]
+		local chosenX = ((chosenIndex - 1) % sectionsX) + 1
+		local chosenY = math.floor((chosenIndex - 1) / sectionsX) + 1
+		local minX = worldMin.X + (chosenX - 1) * sectionWidth + radius
+		local maxX = worldMin.X + chosenX * sectionWidth - radius
+		local minY = worldMin.Y + (chosenY - 1) * sectionHeight + radius
+		local maxY = worldMin.Y + chosenY * sectionHeight - radius
+		local pos = Vector2.new(
+			self.rng:NextNumber(minX, math.max(minX, maxX)),
+			self.rng:NextNumber(minY, math.max(minY, maxY))
+		)
+		return self:_clampToWorld(pos, radius)
+	end
+
+	for _ = 1, attempts do
+		local pos = sectionCandidate()
+		if self:_spawnClearanceOk(pos, radius) then
+			return pos
+		end
+	end
+	for _ = 1, attempts do
+		local pos = self:_randomInWorld(math.max(Config.World.SpawnPadding or 0, radius))
+		if self:_spawnClearanceOk(pos, radius) then
+			return pos
+		end
+	end
+	return nil
 end
 
-function GameService:_spawnVirus(pos: Vector2?)
-	local spawnPos = pos or self:_pickVirusSpawnPosition()
-	local id = self:_nextId()
+function GameService:_spawnVirus(pos: Vector2?): boolean
 	local radius = virusRadius()
+	local spawnPos = pos
+	if spawnPos and not self:_spawnClearanceOk(spawnPos, radius) then
+		spawnPos = nil
+	end
+	spawnPos = spawnPos or self:_pickVirusSpawnPosition()
+	if not spawnPos then
+		return false
+	end
+	local id = self:_nextId()
 	self.viruses[id] = {
 		id = id,
 		kind = "virus",
@@ -13781,6 +13814,7 @@ function GameService:_spawnVirus(pos: Vector2?)
 		lastBumpDir = Vector2.new(1, 0),
 	}
 	self:_markStaticGridsDirty()
+	return true
 end
 
 function GameService:_spawnSpawner(pos: Vector2?)
@@ -14637,10 +14671,15 @@ function GameService:_maintainViruses(target: number)
 		return
 	end
 	local batch = math.min(missing, math.max(Config.Virus.MaxSpawnPerStep or 1, 1))
+	local spawned = 0
 	for _ = 1, batch do
-		self:_spawnVirus()
+		if self:_spawnVirus() then
+			spawned += 1
+		end
 	end
-	self.lastVirusSpawnAt = now
+	if spawned &gt; 0 then
+		self.lastVirusSpawnAt = now
+	end
 end
 
 function GameService:_maintainSpawners(target: number)
