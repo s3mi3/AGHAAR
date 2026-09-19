@@ -5099,7 +5099,12 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		local splitBoostRampDir = nil
 		local singleSplitSoftUntil = nil
 		if kind == "cell" then
-			spawnOrigin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
+			-- Own splits spawn on the parent and ride splitVisualBoost.
+			-- Remote splits used the same nest, then the 15Hz lerp eased
+			-- them out of the parent — that is the floaty split-war look.
+			if extra and extra.isOwn == true then
+				spawnOrigin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
+			end
 			if spawnOrigin then
 				local launchDelta = pos - spawnOrigin
 				local launchDir = if launchDelta.Magnitude &gt; 0.001 then launchDelta.Unit else self.localMoveAim
@@ -6113,9 +6118,9 @@ end
 function Renderer:_stepEntityStates(states, dt: number)
 	local sharpness = Config.Render.InterpolationSharpness
 	if (self.pingMs or 0) &gt; 140 then
-		sharpness = math.max(sharpness * 0.72, 5)
+		-- Keep a snappy floor. The old 0.72/5 path made split-wars drift.
+		sharpness = math.max(sharpness * 0.88, 9)
 	end
-	local alpha = 1 - math.exp(-dt * sharpness)
 	local now = os.clock()
 	local extraExtrapolate = math.clamp((self.pingMs or 0) / 1000 * 0.35, 0, 0.22)
 	for id, state in states do
@@ -6197,9 +6202,17 @@ function Renderer:_stepEntityStates(states, dt: number)
 			continue
 		end
 		if Config.Render.OwnCellPredictionEnabled and state.isOwn then
-			self:_stepOwnCellPrediction(state, dt, alpha)
+			self:_stepOwnCellPrediction(state, dt, 1 - math.exp(-dt * sharpness))
 			continue
 		end
+		local followSharpness = sharpness
+		if state.entityKind == "cell" then
+			local speed = (state.velocity or Vector2.zero).Magnitude
+			if speed &gt; 140 then
+				followSharpness = math.max(followSharpness, Config.Render.RemoteBoostInterpolationSharpness or 18)
+			end
+		end
+		local alpha = 1 - math.exp(-dt * followSharpness)
 		local projectedTime = if state.extrapolate then math.min(now - (state.receivedAt or now), (Config.Render.ExtrapolationSeconds or 0.08) + extraExtrapolate) else 0
 		local projectedTarget = state.targetPos + (state.velocity or Vector2.zero) * projectedTime
 		if state.worldPadding then
@@ -10727,7 +10740,8 @@ Config.Render = {
 	CellDecorMinPixels = 16,
 	-- Smoothness knobs. Higher = snappier / more responsive but jittery.
 	-- Lower = smoother / floatier. dt-independent (alpha = 1 - exp(-k*dt)).
-	InterpolationSharpness = 9, -- was 12; even smoother position/radius lerp
+	InterpolationSharpness = 13, -- 9 felt floaty when two people split around each other
+	RemoteBoostInterpolationSharpness = 18,
 	OwnCellPredictionEnabled = true,
 	OwnCellPredictionReconcileSharpness = 8,
 	-- Ease to the actual frozen location so aiming at a visible cell hits it.
@@ -10774,7 +10788,7 @@ Config.Render = {
 	ObjectMinZIndex = 6,
 	CellMinZIndex = 7,
 	HudRefreshHz = 8,
-	CameraSharpness = 7, -- was 10; softer camera follow
+	CameraSharpness = 9, -- was 7; less camera lag during split wars
 	MinZoom = 0.08,
 	MaxZoom = 24,
 	ManualZoomMin = 0.2,
@@ -10788,7 +10802,7 @@ Config.Render = {
 	-- Merging or losing pieces must not pull the camera in. Auto zoom
 	-- can still pull back as you grow or split. Manual +/- still works.
 	AutoZoomIn = false,
-	ExtrapolationSeconds = 0.08,
+	ExtrapolationSeconds = 0.12,
 	StaticConfirmSnapshots = 3,
 	StaleGraceSnapshots = 2,
 	DynamicMissingGraceSnapshots = 2,
