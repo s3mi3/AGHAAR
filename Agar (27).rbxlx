@@ -6887,7 +6887,8 @@ function Renderer:render(dt: number?)
 			local drawOptions = state.drawOptions or {}
 			state.drawOptions = drawOptions
 			drawOptions.exactSize = state.consumeUntil ~= nil
-			drawOptions.simple = skipDecor == true
+			-- Never use the cheap food path for cells. That hid skins.
+			drawOptions.simple = false
 			drawOptions.baseImage = nil
 			drawOptions.baseImageColor = nil
 			drawOptions.baseImageRectOffset = nil
@@ -6907,24 +6908,26 @@ function Renderer:render(dt: number?)
 				local eaterRadius = state.consumeTarget.radius or state.radius
 				drawOptions.zIndex = math.max(math.floor(eaterRadius) - 2, 1)
 			end
+			local meta = self.playerMeta[extra.ownerUserId]
+			local skinId = (meta and meta.equippedSkinId) or (meta and meta.locationSkinId) or extra.skinId
+			local skin = SkinData.ById[skinId]
+			local skinImage = skin and skin.image or (meta and meta.skinImage) or extra.skinImage
+			local overlayAvatar = meta ~= nil and meta.overlayAvatar == true
+			local avatarDisplayMode = normaliseAvatarDisplayMode(meta and meta.avatarDisplayMode)
+			local avatarImage = extra.ownerUserId and self:_thumbnailForUserId(extra.ownerUserId, avatarDisplayMode) or nil
+			local avatarScaleType = if avatarDisplayMode == "face" then Enum.ScaleType.Crop else Enum.ScaleType.Fit
 			if skipDecor or state.consumeUntil then
 				drawOptions.name = ""
 				drawOptions.score = ""
 			else
-				local meta = self.playerMeta[extra.ownerUserId]
-				local skinId = (meta and meta.equippedSkinId) or (meta and meta.locationSkinId) or extra.skinId
-				local skin = SkinData.ById[skinId]
-				local skinImage = skin and skin.image or (meta and meta.skinImage) or extra.skinImage
-				local overlayAvatar = meta ~= nil and meta.overlayAvatar == true
-				local avatarDisplayMode = normaliseAvatarDisplayMode(meta and meta.avatarDisplayMode)
-				local avatarImage = extra.ownerUserId and self:_thumbnailForUserId(extra.ownerUserId, avatarDisplayMode) or nil
-				local avatarScaleType = if avatarDisplayMode == "face" then Enum.ScaleType.Crop else Enum.ScaleType.Fit
 				drawOptions.name = (meta and meta.name) or extra.name or "Player"
 				local shownMass = state.visualMass or state.mass
 				if shownMass ~= nil and (state.labelMass ~= shownMass or drawOptions.score == nil or drawOptions.score == "") then
 					state.labelMass = shownMass
 					drawOptions.score = displayScore(shownMass)
 				end
+			end
+			if not state.consumeUntil then
 				if skinImage and overlayAvatar then
 					drawOptions.baseImage = skinImage
 					drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
@@ -6936,7 +6939,7 @@ function Renderer:render(dt: number?)
 					drawOptions.baseImage = skinImage
 					drawOptions.baseImageRectOffset = skin and skin.imageRectOffset
 					drawOptions.baseImageRectSize = skin and skin.imageRectSize
-				else
+				elseif not skipDecor then
 					drawOptions.image = avatarImage
 					drawOptions.imageScaleType = avatarScaleType
 				end
@@ -10196,15 +10199,15 @@ return MainMenu
 -- Start here when customizing the template. These values keep the current
 -- gameplay feel by default; change them deliberately and test in Studio.
 Config.World = {
-	Size = Vector2.new(1400, 1400), -- half the previous 2800 arena
-	SpawnPadding = 55,
+	Size = Vector2.new(2100, 2100), -- 1.5x the previous 1400 arena
+	SpawnPadding = 83,
 }
 
 Config.DynamicWorld = {
 	BasePlayers = 6,
 	MaxScale = 1.75,
-	ClusterPadding = 260,
-	ActiveCellMargin = 130,
+	ClusterPadding = 390,
+	ActiveCellMargin = 195,
 	ShrinkDelaySeconds = 35,
 	TargetHysteresis = 0.08,
 	ExpandSpeed = 750,
@@ -10468,17 +10471,17 @@ function Config.balanceClusterVelocity(pos: Vector2, center: Vector2?, groupRadi
 end
 
 Config.Food = {
-	-- Match the smaller arena's area, preserving density with fewer entities.
-	TargetCount = 92,
-	LoadTargetCount = 69,
-	HeavyLoadTargetCount = 39,
-	BonusTargetCount = 30,
-	LoadBonusTargetCount = 19,
-	HeavyLoadBonusTargetCount = 11,
+	-- Match the arena's area, preserving density with fewer entities.
+	TargetCount = 207,
+	LoadTargetCount = 155,
+	HeavyLoadTargetCount = 88,
+	BonusTargetCount = 68,
+	LoadBonusTargetCount = 43,
+	HeavyLoadBonusTargetCount = 25,
 	Mass = 25,
 	Radius = 6,
-	SpawnBatch = 60,
-	PruneBatch = 60,
+	SpawnBatch = 90,
+	PruneBatch = 90,
 	SpawnSectionsX = 5,
 	SpawnSectionsY = 5,
 	Colors = {
@@ -10505,7 +10508,7 @@ Config.Food = {
 
 Config.Virus = {
 	-- Preserve hazard density in the smaller arena.
-	TargetCount = 20,
+	TargetCount = 45,
 	Mass = 800,
 	Radius = 22,
 	-- Eligibility and coverage use Cell.MinEatRatio / Cell.EnemyEatOverlap.
@@ -10526,7 +10529,7 @@ Config.Virus = {
 }
 
 Config.Spawner = {
-	TargetCount = 1, -- preserve density in the compact arena
+	TargetCount = 2, -- preserve density in the compact arena
 	BaseMass = 900,
 	BaseRadius = 82,
 	MaxRadius = 1600,
@@ -10540,8 +10543,8 @@ Config.Spawner = {
 	GrowthPerSecond = 900,
 	DecayPerSecond = 0.12,
 	MaxPelletsPerFeed = 64,
-	MaxMapPellets = 90,
-	PelletScatterRadius = 55,
+	MaxMapPellets = 203,
+	PelletScatterRadius = 83,
 }
 
 Config.Barrier = {
@@ -10552,7 +10555,7 @@ Config.Barrier = {
 }
 
 Config.Coin = {
-	TargetCount = 11,
+	TargetCount = 25,
 	Value = 1,
 	Radius = 10,
 	SpawnBatch = 30,
@@ -10693,14 +10696,14 @@ Config.Network = {
 	ViewportPadding = 220,
 	LoadViewportPadding = 160,
 	HeavyLoadViewportPadding = 120,
-	MaxSnapshotRadius = 2100,
-	LoadMaxSnapshotRadius = 1800,
-	HeavyLoadMaxSnapshotRadius = 1500,
+	MaxSnapshotRadius = 3150,
+	LoadMaxSnapshotRadius = 2700,
+	HeavyLoadMaxSnapshotRadius = 2250,
 	StaticRefreshDistance = 220,
 	StaticRefreshRadiusDelta = 240,
 	StaticRefreshMaxInterval = 2.5,
 	MaxCellsPerSnapshot = 220,
-	MaxFoodPerSnapshot = 80,
+	MaxFoodPerSnapshot = 120,
 	MaxVirusesPerSnapshot = 32,
 	MaxSpawnersPerSnapshot = 8,
 	MaxBarriersPerSnapshot = 6,
@@ -17398,7 +17401,7 @@ function GameService:_snapshotRadius(state): number
 		end
 	end
 
-	return math.clamp(maxView * 0.65 + totalRadius + padding, 700, maxRadius)
+	return math.clamp(maxView * 0.65 + totalRadius + padding, 1050, maxRadius)
 end
 
 function GameService:_appendSnapshotEntities(list, grid, source, center: Vector2, radius: number, maxCount: number, pack, sortByDistance: boolean?)
