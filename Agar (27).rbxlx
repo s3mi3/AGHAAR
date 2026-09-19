@@ -2661,6 +2661,7 @@ return CirclePool
             <ProtectedString name="Source">local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local GuiService = game:GetService("GuiService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("Config"))
 
@@ -3246,6 +3247,14 @@ function InputController:setKeybinds(binds)
 	end
 end
 
+local function inputHudTopMinY(parentSizeY: number): number
+	local insetY = 36
+	pcall(function()
+		insetY = math.max(GuiService:GetGuiInset().Y, 36)
+	end)
+	return math.clamp((insetY + 68) / math.max(parentSizeY, 1), 0, 0.4)
+end
+
 local function inputHudCapture(frame)
 	local parent = frame.Parent
 	if not parent then
@@ -3280,9 +3289,14 @@ function InputController:_applyHudLayoutEntry(frame, layout, limits)
 		w, h = side, side
 	end
 	frame.AnchorPoint = Vector2.new(0, 0)
+	local minY = -0.05
+	local parent = frame.Parent
+	if parent and parent.AbsoluteSize.Y &gt; 1 then
+		minY = inputHudTopMinY(parent.AbsoluteSize.Y)
+	end
 	frame.Position = UDim2.fromScale(
 		math.clamp(tonumber(layout.x) or 0, -0.05, 1.05),
-		math.clamp(tonumber(layout.y) or 0, -0.05, 1.05)
+		math.clamp(tonumber(layout.y) or 0, minY, 1.05)
 	)
 	frame.Size = UDim2.fromOffset(w, h)
 end
@@ -3421,7 +3435,7 @@ function InputController:_updateHudDrag(input)
 	if drag.mode == "move" then
 		local pos = drag.origin + delta - ppos
 		local x = math.clamp(pos.X / math.max(psize.X, 1), -0.05, 0.98)
-		local y = math.clamp(pos.Y / math.max(psize.Y, 1), -0.05, 0.98)
+		local y = math.clamp(pos.Y / math.max(psize.Y, 1), inputHudTopMinY(psize.Y), 0.98)
 		frame.AnchorPoint = Vector2.new(0, 0)
 		frame.Position = UDim2.fromScale(x, y)
 	else
@@ -3457,6 +3471,14 @@ function InputController:setHudEditEnabled(enabled)
 		self:_cancelTouches()
 		self.lastTouchLayoutEnabled = nil
 		self:_layoutTouchButtons()
+		if self.hudWidgets then
+			for _, widget in self.hudWidgets do
+				local captured = inputHudCapture(widget.frame)
+				if captured then
+					self:_applyHudLayoutEntry(widget.frame, captured, widget)
+				end
+			end
+		end
 	else
 		self:_endHudDrag()
 		self.lastTouchLayoutEnabled = nil
@@ -3539,6 +3561,7 @@ return InputController
             <ProtectedString name="Source">local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("Config"))
 local SkinData = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("SkinData"))
@@ -3830,6 +3853,22 @@ local function configureFullscreenGui(gui: ScreenGui)
 	pcall(function()
 		gui.ClipToDeviceSafeArea = false
 	end)
+end
+
+local function robloxTopInset(): number
+	local ok, inset = pcall(function()
+		return GuiService:GetGuiInset()
+	end)
+	if ok and typeof(inset) == "Vector2" then
+		return math.max(inset.Y, 36)
+	end
+	return 36
+end
+
+local function hudMinYScale(parentSizeY: number): number
+	-- Keep widgets below the Roblox topbar plus the green edit bar.
+	local topPad = robloxTopInset() + 68
+	return math.clamp(topPad / math.max(parentSizeY, 1), 0, 0.4)
 end
 
 function Renderer.new(playerGui: PlayerGui, camera, shopRemote: RemoteEvent?, debugRemote: RemoteEvent?)
@@ -6797,7 +6836,7 @@ function Renderer:_createSocialHud()
 	leaderboard.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
 	leaderboard.BackgroundTransparency = 0.42
 	leaderboard.BorderSizePixel = 0
-	leaderboard.Position = UDim2.new(1, -12, 0, 12)
+	leaderboard.Position = UDim2.new(1, -12, 0, robloxTopInset() + 12)
 	leaderboard.Size = UDim2.fromOffset(210, 248)
 	leaderboard.ZIndex = 110
 	leaderboard.Parent = self.hud
@@ -7044,9 +7083,14 @@ local function hudApply(frame, layout, limits)
 		w, h = side, side
 	end
 	frame.AnchorPoint = Vector2.new(0, 0)
+	local minY = -0.05
+	local parent = frame.Parent
+	if parent and parent.AbsoluteSize.Y &gt; 1 then
+		minY = hudMinYScale(parent.AbsoluteSize.Y)
+	end
 	frame.Position = UDim2.fromScale(
 		math.clamp(tonumber(layout.x) or 0, -0.05, 1.05),
-		math.clamp(tonumber(layout.y) or 0, -0.05, 1.05)
+		math.clamp(tonumber(layout.y) or 0, minY, 1.05)
 	)
 	frame.Size = UDim2.fromOffset(w, h)
 end
@@ -7209,7 +7253,7 @@ function Renderer:_updateHudDrag(input)
 	if drag.mode == "move" then
 		local pos = drag.origin + delta - ppos
 		local x = math.clamp(pos.X / math.max(psize.X, 1), -0.05, 0.98)
-		local y = math.clamp(pos.Y / math.max(psize.Y, 1), -0.05, 0.98)
+		local y = math.clamp(pos.Y / math.max(psize.Y, 1), hudMinYScale(psize.Y), 0.98)
 		frame.AnchorPoint = Vector2.new(0, 0)
 		frame.Position = UDim2.fromScale(x, y)
 	else
@@ -7243,6 +7287,13 @@ function Renderer:setHudEditEnabled(enabled)
 	self.hudEditEnabled = enabled == true
 	if not self.hudEditEnabled then
 		self:_endHudDrag()
+	elseif self.hudWidgets then
+		for _, widget in self.hudWidgets do
+			local captured = hudCapture(widget.frame)
+			if captured then
+				hudApply(widget.frame, captured, widget)
+			end
+		end
 	end
 	if self.hudWidgets then
 		for _, widget in self.hudWidgets do
@@ -7724,6 +7775,7 @@ return Localization
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
 
 local Config = require(ReplicatedStorage:WaitForChild("Agar2D"):WaitForChild("Shared"):WaitForChild("Config"))
 
@@ -8176,7 +8228,7 @@ function MainMenu:_buildSkinsPage()
 		name.TextXAlignment = Enum.TextXAlignment.Center
 		name.ZIndex = 5
 
-		local modeButton = button(card, info.label, Color3.fromRGB(200, 206, 214))
+		local modeButton = button(card, "", Color3.fromRGB(200, 206, 214))
 		modeButton.AnchorPoint = Vector2.new(0.5, 1)
 		modeButton.Position = UDim2.new(0.5, 0, 1, -4)
 		modeButton.Size = UDim2.new(1, 0, 0, 36)
@@ -8302,11 +8354,19 @@ function MainMenu:_buildSettingsPage()
 	left.Parent = page
 	local leftLayout = Instance.new("UIListLayout")
 	leftLayout.Padding = UDim.new(0, 8)
+	leftLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	leftLayout.Parent = left
+	local leftOrder = 0
+	local function addLeft(item)
+		leftOrder += 1
+		item.LayoutOrder = leftOrder
+		return item
+	end
 
-	label(left, "Map colour", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+	addLeft(label(left, "Map colour", 16, TEXT, true)).Size = UDim2.new(1, 0, 0, 22)
 
 	self.mapLightButton = button(left, "Light", MAP_LIGHT.bg)
+	addLeft(self.mapLightButton)
 	self.mapLightButton.Size = UDim2.new(1, 0, 0, 32)
 	self.mapLightButton.MouseButton1Click:Connect(function()
 		self.mapMode = "light"
@@ -8315,6 +8375,7 @@ function MainMenu:_buildSettingsPage()
 	end)
 
 	self.mapDarkButton = button(left, "Dark", MAP_DARK.bg)
+	addLeft(self.mapDarkButton)
 	self.mapDarkButton.Size = UDim2.new(1, 0, 0, 32)
 	self.mapDarkButton.TextColor3 = TEXT
 	self.mapDarkButton.MouseButton1Click:Connect(function()
@@ -8324,6 +8385,7 @@ function MainMenu:_buildSettingsPage()
 	end)
 
 	self.mapPickerButton = button(left, "Colour picker", Color3.fromRGB(200, 206, 214))
+	addLeft(self.mapPickerButton)
 	self.mapPickerButton.Size = UDim2.new(1, 0, 0, 32)
 	self.mapPickerButton.MouseButton1Click:Connect(function()
 		self.mapMode = "custom"
@@ -8337,6 +8399,9 @@ function MainMenu:_buildSettingsPage()
 	end)
 
 	self:_buildColourPicker(left)
+	if self.pickerFrame then
+		addLeft(self.pickerFrame)
+	end
 
 	local right = Instance.new("ScrollingFrame")
 	right.BackgroundTransparency = 1
@@ -8348,15 +8413,23 @@ function MainMenu:_buildSettingsPage()
 	right.Parent = page
 	local rightLayout = Instance.new("UIListLayout")
 	rightLayout.Padding = UDim.new(0, 8)
+	rightLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	rightLayout.Parent = right
+	local rightOrder = 0
+	local function addRight(item)
+		rightOrder += 1
+		item.LayoutOrder = rightOrder
+		return item
+	end
 
-	label(right, "Keybinds", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+	addRight(label(right, "Keybinds", 16, TEXT, true)).Size = UDim2.new(1, 0, 0, 22)
 	self.bindButtons = {}
 	for _, entry in BIND_ORDER do
 		local row = Instance.new("Frame")
 		row.BackgroundTransparency = 1
 		row.Size = UDim2.new(1, 0, 0, 36)
 		row.Parent = right
+		addRight(row)
 		local name = label(row, entry.label, 14, TEXT, false)
 		name.Size = UDim2.new(0.5, 0, 1, 0)
 		local b = button(row, keyName(self.keybinds[entry.id]), Color3.fromRGB(200, 206, 214))
@@ -8369,9 +8442,10 @@ function MainMenu:_buildSettingsPage()
 		self.bindButtons[entry.id] = b
 	end
 
-	label(right, "HUD", 16, TEXT, true).Size = UDim2.new(1, 0, 0, 22)
+	addRight(label(right, "HUD", 16, TEXT, true)).Size = UDim2.new(1, 0, 0, 22)
 
 	self.minimapToggle = button(right, "Minimap: ON", ACCENT)
+	addRight(self.minimapToggle)
 	self.minimapToggle.Size = UDim2.new(1, 0, 0, 40)
 	self.minimapToggle.MouseButton1Click:Connect(function()
 		self.minimapEnabled = self.minimapEnabled ~= true
@@ -8383,6 +8457,7 @@ function MainMenu:_buildSettingsPage()
 	end)
 
 	self.friendArrowsToggle = button(right, "Friend arrows: ON", ACCENT)
+	addRight(self.friendArrowsToggle)
 	self.friendArrowsToggle.Size = UDim2.new(1, 0, 0, 40)
 	self.friendArrowsToggle.MouseButton1Click:Connect(function()
 		self.friendArrowsEnabled = self.friendArrowsEnabled ~= true
@@ -8394,12 +8469,14 @@ function MainMenu:_buildSettingsPage()
 	end)
 
 	self.settingsEditHudButton = button(right, "Move &amp; resize HUD", Color3.fromRGB(200, 206, 214))
+	addRight(self.settingsEditHudButton)
 	self.settingsEditHudButton.Size = UDim2.new(1, 0, 0, 40)
 	self.settingsEditHudButton.MouseButton1Click:Connect(function()
 		self:_beginHudEdit()
 	end)
 
 	self.resetHudButton = button(right, "Reset HUD layout", Color3.fromRGB(200, 206, 214))
+	addRight(self.resetHudButton)
 	self.resetHudButton.Size = UDim2.new(1, 0, 0, 40)
 	self.resetHudButton.MouseButton1Click:Connect(function()
 		self:_resetHudLayout()
@@ -8655,28 +8732,35 @@ function MainMenu:_row(parent, text, actions)
 end
 
 function MainMenu:_buildHudEditBar()
+	local insetY = 36
+	pcall(function()
+		insetY = math.max(GuiService:GetGuiInset().Y, 36)
+	end)
+
 	local bar = Instance.new("Frame")
 	bar.Name = "HudEditBar"
 	bar.AnchorPoint = Vector2.new(0.5, 0)
-	bar.BackgroundColor3 = PANEL
+	bar.BackgroundColor3 = ACCENT
 	bar.BorderSizePixel = 0
-	bar.Position = UDim2.new(0.5, 0, 0, 10)
-	bar.Size = UDim2.new(1, -20, 0, 58)
+	bar.Position = UDim2.new(0.5, 0, 0, insetY + 8)
+	bar.Size = UDim2.new(1, -24, 0, 56)
 	bar.Visible = false
 	bar.ZIndex = 40
 	bar.Parent = self.gui
 	corner(bar, 12)
 	self.editBar = bar
 
-	local hint = label(bar, "Drag to move · corner square to resize", 14, TEXT, true)
+	local hint = label(bar, "Drag a widget to move it. Drag the green corner to resize.", 15, Color3.fromRGB(16, 20, 24), true)
 	hint.Position = UDim2.fromOffset(16, 8)
-	hint.Size = UDim2.new(1, -150, 0, 42)
+	hint.Size = UDim2.new(1, -150, 0, 40)
 	hint.TextWrapped = true
+	hint.TextXAlignment = Enum.TextXAlignment.Left
 
-	local done = button(bar, "Done", ACCENT)
+	local done = button(bar, "Done", Color3.fromRGB(20, 25, 32))
 	done.AnchorPoint = Vector2.new(1, 0.5)
 	done.Position = UDim2.new(1, -12, 0.5, 0)
 	done.Size = UDim2.fromOffset(110, 40)
+	done.TextColor3 = Color3.fromRGB(255, 255, 255)
 	done.MouseButton1Click:Connect(function()
 		self:_endHudEdit(true)
 	end)
@@ -9041,6 +9125,7 @@ function MainMenu:_refreshSkins()
 			preview.stroke.Transparency = if on then 0 else 1
 		end
 		if preview.button then
+			preview.button.Text = ""
 			preview.button.BackgroundColor3 = if on then ACCENT else Color3.fromRGB(200, 206, 214)
 			preview.button.TextColor3 = Color3.fromRGB(16, 20, 24)
 		end
@@ -10030,8 +10115,8 @@ Config.Cell = {
 	LoadSamePlayerPushPasses = 2,
 
 	-- ==================================================================
-	-- E / Double Split: from one cell, 3 pieces; later presses
-	-- run two all-cell generations up to MaxCells (32).
+	-- E / Double Split: two all-cell generations (1→4), same shot
+	-- as Triple. Later presses keep multiplying up to MaxCells (32).
 	-- R / Triple Split: three all-cell generations (1→8, then 8→32).
 	-- Set enabled = false to disable a hotkey without unbinding it.
 	-- ==================================================================
@@ -10040,7 +10125,7 @@ Config.Cell = {
 	RSplitGenerations = 3,
 	ESplitGenerations = 2,
 	RSplitTargetCells = 4,
-	ESplitTargetCells = 3,
+	ESplitTargetCells = 4,
 
 	-- Cluster matching was making split pieces travel as one blob.
 	-- Agar.io lets each cell keep its own mass-based speed, so small
@@ -14660,7 +14745,8 @@ function GameService:_processCommands()
 			self:_repeatSplitPlayer(state, Config.Cell.RSplitGenerations or 3)
 		end
 
-		-- E / Double Split: 3 cells from one blob; later presses multiply.
+		-- E / Double Split: two all-cell generations (1→4), same shot
+		-- as Triple. Later presses keep multiplying up to MaxCells (32).
 		if Config.Cell.TripleSplitEnabled
 			and state.input.tripleSplitToken ~= state.lastTripleSplitToken then
 			state.lastTripleSplitToken = state.input.tripleSplitToken
@@ -14905,8 +14991,7 @@ end
 
 function GameService:_splitToCellCount(state, targetCount: number)
 	-- Split the largest eligible cell one at a time along one locked aim
-	-- until the player has `targetCount` cells. Used for the first
-	-- Double Split from a single blob (3 cells, not 4).
+	-- until the player has `targetCount` cells.
 	local aim = splitAimForState(state)
 	local target = math.min(
 		math.max(math.floor(targetCount), 1),
@@ -14922,12 +15007,7 @@ function GameService:_splitToCellCount(state, targetCount: number)
 end
 
 function GameService:_doubleSplitPlayer(state)
-	-- First press from one cell → 3 equal pieces. After that, two
-	-- all-cell generations so 8→16→32 and other stacks keep multiplying.
-	if #state.cells &lt;= 1 then
-		self:_splitEveryCellIntoN(state, Config.Cell.ESplitTargetCells or 3, splitAimForState(state))
-		return
-	end
+	-- Same launch as Triple Split, one fewer generation: 1→2→4.
 	self:_repeatSplitPlayer(state, Config.Cell.ESplitGenerations or 2)
 end
 
