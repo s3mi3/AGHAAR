@@ -4937,13 +4937,21 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 			local origin
 			origin, spawnSource = self:_cellSpawnVisualOrigin(id, pos, radius, extra, serial)
 			if origin then
-				displayPos = origin
-				displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
 				local launchDelta = pos - origin
 				local launchDir = if launchDelta.Magnitude &gt; 0.001 then launchDelta.Unit else self.localMoveAim
 				local boostScale = if self.localFrozen
 					then math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
 					else 1
+				if self.localFrozen then
+					-- Frozen pieces are already parked beside the parent.
+					-- Starting on the origin made a freeze-split look like
+					-- one stacked blob until unfreeze.
+					displayPos = pos
+					displayRadius = radius
+				else
+					displayPos = origin
+					displayRadius = math.max(radius * (Config.Render.SplitSpawnAnimationStartRadiusScale or 0.82), 1)
+				end
 				if boostScale &gt; 0 then
 					splitVisualBoost = launchDir * splitImpulseForMass(mass) * boostScale
 				end
@@ -5093,8 +5101,20 @@ function Renderer:_syncEntity(states, id: number, pos: Vector2, radius: number, 
 		end
 	end
 
+	local previousTarget = state.targetPos
 	state.entityKind = kind
 	state.targetPos = pos
+	if self.localFrozen
+		and kind == "cell"
+		and extra
+		and extra.isOwn == true
+		and previousTarget
+		and (pos - previousTarget).Magnitude &gt; 1
+	then
+		-- Server just parked a freeze-split. Follow that placement
+		-- instead of staying glued to the pre-split stack.
+		state.displayPos = pos
+	end
 	state.targetRadius = radius
 	state.mass = mass
 	if (state.mergePending or state.mergeHoldRadius) and typeof(mass) == "number" then
@@ -9528,7 +9548,7 @@ Config.Cell = {
 	SplitSpawnOffsetRadiusScale = 0,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
-	FrozenSplitNudgeRadiusScale = 0.55,
+	FrozenSplitNudgeRadiusScale = 0.75,
 	FrozenSplitHeldBoostScale = 1,
 	SplitConsumeGraceSeconds = 0.18,
 	SplitPushGraceSeconds = 0.55,
@@ -14180,7 +14200,10 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			else self:_splitLaunchBoost(cell, dir, childMass)
 		local spawnPos
 		if state.frozen then
-			local frozenNudge = childRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+			-- Parked splits cannot fly out, so sit the child beside the
+			-- parent instead of nesting on its center.
+			local frozenNudge = (cell.radius + childRadius)
+				* math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.75, 0)
 			spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, childRadius)
 		else
 			-- Senpa/vanilla: the child is born on the parent. Boost, not a
@@ -14204,6 +14227,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			child.splitAxis = dir
 			child.splitParentId = cell.id
 		end
+	end
+	if state.frozen then
+		self:_separateFrozenSplitCells(state)
 	end
 end
 
@@ -14258,7 +14284,8 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 			if state.frozen then
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
 					* math.max(Config.Cell.FrozenSplitHeldBoostScale or 0, 0)
-				local frozenNudge = pieceRadius * math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0, 0)
+				local frozenNudge = (cell.radius + pieceRadius)
+					* math.max(Config.Cell.FrozenSplitNudgeRadiusScale or 0.75, 0)
 				spawnPos = self:_clampToWorld(cell.pos + dir * frozenNudge, pieceRadius)
 			else
 				childVelocity = self:_splitLaunchBoost(cell, dir, pieceMass)
@@ -14279,6 +14306,9 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 				child.splitParentId = cell.id
 			end
 		end
+	end
+	if state.frozen then
+		self:_separateFrozenSplitCells(state)
 	end
 end
 
@@ -14334,6 +14364,82 @@ end
 --    Enemy eats and pellets still resolve.
 -- Debounce prevents accidental double-taps.
 -- ==================================================================
+function GameService:_separateFrozenSplitCells(state)
+	-- Live splits fly out with boost. Frozen splits cannot move or
+	-- push, so a parked burst would sit on one pixel. Place those
+	-- pieces beside each other once; do not touch unfrozen splitting.
+	if not state.frozen then
+		return
+	end
+
+	local cells = {}
+	for _, id in state.cells do
+		local cell = self.cells[id]
+		if cell then
+			cells[#cells + 1] = cell
+		end
+	end
+	if #cells &lt; 2 then
+		return
+	end
+	table.sort(cells, function(a, b)
+		return a.id &lt; b.id
+	end)
+
+	local nest = math.clamp(Config.Cell.FrozenSplitOverlapScale or 0.82, 0.35, 1)
+	local passes = math.max(Config.Cell.FrozenSplitSeparatePasses or 8, 1)
+	local cap = math.max(Config.Cell.FrozenSplitSeparateMaxStep or 18, 4)
+	local fallbackAim = Vec2.safeUnit(state.input.aim, Vector2.new(1, 0))
+
+	for _ = 1, passes do
+		for i = 1, #cells - 1 do
+			local a = cells[i]
+			for j = i + 1, #cells do
+				local b = cells[j]
+				local delta = b.pos - a.pos
+				local dist = delta.Magnitude
+				local minDist = (a.radius + b.radius) * nest
+				if dist &gt;= minDist then
+					continue
+				end
+				local dir
+				if dist &gt; 0.001 then
+					dir = delta / dist
+				else
+					local child = if a.splitParentId == b.id then a
+						elseif b.splitParentId == a.id then b
+						else nil
+					dir = Vec2.safeUnit(
+						if child then (child.splitAxis or Vector2.zero) else Vector2.zero,
+						Vec2.safeUnit(
+							(a.boost or Vector2.zero) + (b.boost or Vector2.zero),
+							fallbackAim
+						)
+					)
+					if dir.Magnitude &lt; 0.001 then
+						local angle = (i + j) * 2.399963229728653
+						dir = Vector2.new(math.cos(angle), math.sin(angle))
+					end
+					dist = 0
+				end
+				local overlap = math.min(minDist - dist, cap)
+				local total = math.max(a.mass + b.mass, 1)
+				local aShare = b.mass / total
+				local bShare = a.mass / total
+				if a.splitParentId == b.id then
+					aShare, bShare = 0.92, 0.08
+				elseif b.splitParentId == a.id then
+					aShare, bShare = 0.08, 0.92
+				end
+				a.pos -= dir * overlap * aShare
+				b.pos += dir * overlap * bShare
+				a.pos = self:_clampToWorld(a.pos, a.radius)
+				b.pos = self:_clampToWorld(b.pos, b.radius)
+			end
+		end
+	end
+end
+
 function GameService:_applyUnfreezeRelease(state)
 	local cfg = Config.Freeze or {}
 	local cells = {}
