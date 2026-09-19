@@ -9523,7 +9523,7 @@ Config.Cell = {
 	MaxSplitPiecesPerCommand = 16,
 	-- Spawn close to the parent and let boost create the launch. Spawning two
 	-- radii ahead caused authoritative collision before the visual got there.
-	SplitSpawnOffsetRadiusScale = 0,
+	SplitSpawnOffsetRadiusScale = 0.22,
 	-- Frozen splits stay motionless after spawning, but appear a small
 	-- distance toward the cursor so the split still has direction.
 	FrozenSplitNudgeRadiusScale = 0.55,
@@ -14204,6 +14204,9 @@ function GameService:_splitPlayer(state, lockedAim: Vector2?, maxPieces: number?
 			if steerLockUntil then
 				child.repeatSplitSteerUntil = steerLockUntil
 			end
+			self:_lockTrainToAim({
+				cells = { cell.id, child.id },
+			}, dir, cell.pos)
 		end
 	end
 end
@@ -14281,15 +14284,39 @@ function GameService:_splitEveryCellIntoN(state, piecesPerCell: number)
 	end
 end
 
+function GameService:_lockTrainToAim(state, aim: Vector2, origin: Vector2)
+	-- Kill sideways drift so a 4/8-cell burst stays a straight senpa-style
+	-- line. Forward spacing and boost are kept.
+	if aim.Magnitude &lt; 0.001 then
+		return
+	end
+	for _, id in state.cells do
+		local cell = self.cells[id]
+		if cell then
+			local along = (cell.pos - origin):Dot(aim)
+			cell.pos = self:_clampToWorld(origin + aim * along, cell.radius)
+			local forward = math.max((cell.boost or Vector2.zero):Dot(aim), 0)
+			cell.boost = aim * forward
+			cell.splitAxis = aim
+		end
+	end
+end
+
 function GameService:_repeatSplitPlayer(state, generations: number)
 	-- Every eligible cell splits each generation, same locked aim, up to
 	-- MaxCells (32). Triple is 3 generations: 1→2→4→8, then 8→16→32.
 	local aim = splitAimForState(state)
+	local origin = state.center
+	if not origin then
+		local cells = self:_sortedPlayerCells(state)
+		origin = if #cells &gt; 0 then cells[1].pos else Vector2.zero
+	end
 	for _ = 1, math.max(math.floor(generations), 1) do
 		if #state.cells &gt;= Config.Player.MaxCells then
 			break
 		end
 		self:_splitPlayer(state, aim)
+		self:_lockTrainToAim(state, aim, origin)
 	end
 end
 
@@ -14302,9 +14329,15 @@ function GameService:_splitToCellCount(state, targetCount: number)
 		math.max(math.floor(targetCount), 1),
 		Config.Player.MaxCells
 	)
+	local origin = state.center
+	if not origin then
+		local startCells = self:_sortedPlayerCells(state)
+		origin = if #startCells &gt; 0 then startCells[1].pos else Vector2.zero
+	end
 	while #state.cells &lt; target do
 		local before = #state.cells
 		self:_splitPlayer(state, aim, 1)
+		self:_lockTrainToAim(state, aim, origin)
 		if #state.cells &lt;= before then
 			break
 		end
@@ -15265,13 +15298,9 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 					local dist = delta.Magnitude
 					local minDist = a.radius + b.radius
 					if dist &lt; minDist and (now &lt; a.canRecombineAt or now &lt; b.canRecombineAt) then
-						-- Senpa/vanilla: just-split cells ignore sibling
-						-- collision (~15 ticks). The child's boost is the
-						-- whole shot; a midpoint shove is what looked wrong.
 						local graceUntil = math.max(a.splitPushGraceUntil or 0, b.splitPushGraceUntil or 0)
-						if now &lt; graceUntil then
-							continue
-						end
+						local inSplitGrace = now &lt; graceUntil
+						local inLaunch = now &lt; graceUntil + math.max(Config.Cell.SplitLaunchBiasSeconds or 0.4, 0)
 						local axis = Vec2.safeUnit(
 							(a.splitAxis or Vector2.zero) + (b.splitAxis or Vector2.zero),
 							Vec2.safeUnit(
@@ -15279,18 +15308,45 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 								state.input.aim
 							)
 						)
+						if (b.pos - a.pos):Dot(axis) &lt; 0 then
+							axis = -axis
+						end
 						local dir
-						if dist &gt; 0.001 then
-							dir = delta / dist
-						else
+						if inLaunch or dist &lt;= 0.001 then
+							-- Keep leftover shove on the launch line. Skipping
+							-- collision entirely stacked the train, then the
+							-- 720 push sprayed it sideways.
 							dir = axis
-							dist = 0
+							if dist &lt;= 0.001 then
+								dist = 0
+							end
+						else
+							dir = delta / dist
 						end
 
-						local overlap = math.min((minDist - dist) * pushStrength, overlapCap)
+						local pairOverlapCap = overlapCap
+						if inSplitGrace then
+							pairOverlapCap = math.min(
+								pairOverlapCap,
+								math.max(Config.Cell.SplitPushMaxOverlapPerStep or 6, 0)
+							)
+						end
+						local overlap = math.min((minDist - dist) * pushStrength, pairOverlapCap)
 						local totalMass = math.max(a.mass + b.mass, 1)
 						local aShare = b.mass / totalMass
 						local bShare = a.mass / totalMass
+						if inLaunch then
+							local recoil = math.clamp(Config.Cell.SplitParentRecoilShare or 0.08, 0, 0.5)
+							local aAlong = a.pos:Dot(axis) + (a.boost or Vector2.zero):Dot(axis) * 0.03
+							local bAlong = b.pos:Dot(axis) + (b.boost or Vector2.zero):Dot(axis) * 0.03
+							if bAlong &gt;= aAlong then
+								aShare = recoil
+								bShare = 1 - recoil
+							else
+								bShare = recoil
+								aShare = 1 - recoil
+							end
+						end
 						overlap = math.min(overlap,
 							(pushBudget[a.id] or 0) / math.max(aShare, 0.000001),
 							(pushBudget[b.id] or 0) / math.max(bShare, 0.000001))
@@ -15299,14 +15355,16 @@ function GameService:_resolveSamePlayerPush(dt: number?)
 
 						a.pos -= dir * overlap * aShare
 						b.pos += dir * overlap * bShare
-						local aBoost = a.boost or Vector2.zero
-						local bBoost = b.boost or Vector2.zero
-						local tangent = Vector2.new(-dir.Y, dir.X)
-						local spin = (bBoost - aBoost):Dot(tangent)
-						if math.abs(spin) &gt; 1 then
-							local kill = spin * 0.45
-							a.boost = aBoost + tangent * (kill * bShare)
-							b.boost = bBoost - tangent * (kill * aShare)
+						if not inLaunch then
+							local aBoost = a.boost or Vector2.zero
+							local bBoost = b.boost or Vector2.zero
+							local tangent = Vector2.new(-dir.Y, dir.X)
+							local spin = (bBoost - aBoost):Dot(tangent)
+							if math.abs(spin) &gt; 1 then
+								local kill = spin * 0.45
+								a.boost = aBoost + tangent * (kill * bShare)
+								b.boost = bBoost - tangent * (kill * aShare)
+							end
 						end
 						a.pos = self:_clampToWorld(a.pos, a.radius)
 						b.pos = self:_clampToWorld(b.pos, b.radius)
