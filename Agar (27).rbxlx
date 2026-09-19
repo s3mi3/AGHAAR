@@ -10151,15 +10151,15 @@ return MainMenu
 -- Start here when customizing the template. These values keep the current
 -- gameplay feel by default; change them deliberately and test in Studio.
 Config.World = {
-	Size = Vector2.new(2100, 2100), -- 1.5x the previous 1400 arena
-	SpawnPadding = 83,
+	Size = Vector2.new(3000, 3000),
+	SpawnPadding = 119,
 }
 
 Config.DynamicWorld = {
 	BasePlayers = 6,
 	MaxScale = 1.75,
-	ClusterPadding = 390,
-	ActiveCellMargin = 195,
+	ClusterPadding = 557,
+	ActiveCellMargin = 279,
 	ShrinkDelaySeconds = 35,
 	TargetHysteresis = 0.08,
 	ExpandSpeed = 750,
@@ -10424,16 +10424,16 @@ end
 
 Config.Food = {
 	-- Match the arena's area, preserving density with fewer entities.
-	TargetCount = 207,
-	LoadTargetCount = 155,
-	HeavyLoadTargetCount = 88,
-	BonusTargetCount = 68,
-	LoadBonusTargetCount = 43,
-	HeavyLoadBonusTargetCount = 25,
+	TargetCount = 422,
+	LoadTargetCount = 316,
+	HeavyLoadTargetCount = 180,
+	BonusTargetCount = 139,
+	LoadBonusTargetCount = 88,
+	HeavyLoadBonusTargetCount = 51,
 	Mass = 25,
 	Radius = 6,
-	SpawnBatch = 90,
-	PruneBatch = 90,
+	SpawnBatch = 120,
+	PruneBatch = 120,
 	SpawnSectionsX = 5,
 	SpawnSectionsY = 5,
 	Colors = {
@@ -10485,7 +10485,7 @@ Config.Virus = {
 }
 
 Config.Spawner = {
-	TargetCount = 2, -- preserve density in the compact arena
+	TargetCount = 4, -- preserve density in the compact arena
 	BaseMass = 900,
 	BaseRadius = 82,
 	MaxRadius = 1600,
@@ -10499,8 +10499,8 @@ Config.Spawner = {
 	GrowthPerSecond = 900,
 	DecayPerSecond = 0.12,
 	MaxPelletsPerFeed = 64,
-	MaxMapPellets = 203,
-	PelletScatterRadius = 83,
+	MaxMapPellets = 414,
+	PelletScatterRadius = 119,
 }
 
 Config.Barrier = {
@@ -10511,7 +10511,7 @@ Config.Barrier = {
 }
 
 Config.Coin = {
-	TargetCount = 25,
+	TargetCount = 51,
 	Value = 1,
 	Radius = 10,
 	SpawnBatch = 30,
@@ -10652,9 +10652,9 @@ Config.Network = {
 	ViewportPadding = 220,
 	LoadViewportPadding = 160,
 	HeavyLoadViewportPadding = 120,
-	MaxSnapshotRadius = 3150,
-	LoadMaxSnapshotRadius = 2700,
-	HeavyLoadMaxSnapshotRadius = 2250,
+	MaxSnapshotRadius = 4500,
+	LoadMaxSnapshotRadius = 3860,
+	HeavyLoadMaxSnapshotRadius = 3210,
 	StaticRefreshDistance = 220,
 	StaticRefreshRadiusDelta = 240,
 	StaticRefreshMaxInterval = 2.5,
@@ -17373,7 +17373,7 @@ function GameService:_snapshotRadius(state): number
 		end
 	end
 
-	return math.clamp(maxView * 0.65 + totalRadius + padding, 1050, maxRadius)
+	return math.clamp(maxView * 0.65 + totalRadius + padding, 1500, maxRadius)
 end
 
 function GameService:_appendSnapshotEntities(list, grid, source, center: Vector2, radius: number, maxCount: number, pack, sortByDistance: boolean?)
